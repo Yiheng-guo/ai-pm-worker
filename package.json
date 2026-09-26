@@ -1,0 +1,42 @@
+{
+  "name": "ai-pm-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "亦伴 — 面向 AI 产品经理的办公 Worker",
+  "engines": {
+    "node": "24.x"
+  },
+  "scripts": {
+    "dev": "concurrently -k \"node --watch server/index.mjs\" \"vite --host 127.0.0.1\"",
+    "build": "tsc --noEmit && vite build",
+    "start": "node server/index.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "format": "prettier --write src server tests api"
+  },
+  "dependencies": {
+    "@napi-rs/canvas": "^1.0.9",
+    "@vercel/blob": "^2.8.0",
+    "@vercel/functions": "^3.9.9",
+    "@vitejs/plugin-react": "latest",
+    "express": "^5.1.0",
+    "jszip": "^3.10.1",
+    "lucide-react": "latest",
+    "mammoth": "^1.10.0",
+    "multer": "^2.0.2",
+    "pdf-parse": "^2.4.5",
+    "react": "latest",
+    "react-dom": "latest",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "typescript": "latest",
+    "vite": "latest",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/react": "latest",
+    "@types/react-dom": "latest",
+    "concurrently": "^9.2.0",
+    "prettier": "^3.9.9"
+  }
+}

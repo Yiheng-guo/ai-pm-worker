@@ -1,0 +1,12 @@
+AI PM Worker / Product Foundry
+Copyright 2026 Yiheng-guo
+
+This distribution includes modular adaptations of:
+- E2B Fragments (https://github.com/e2b-dev/fragments), Apache License 2.0.
+  Original schema and license retained in third_party/fragments.
+- LangChain OpenWork (https://github.com/langchain-ai/openwork), MIT License.
+  Original system prompt and license retained in third_party/openwork.
+
+Modifications: source-grounded Chinese PM deliverables, bounded HTML/PRD artifacts,
+independent local/cloud workspaces, task persistence, versioning and export.
+These projects are not affiliated with or endorsed by the upstream authors.
