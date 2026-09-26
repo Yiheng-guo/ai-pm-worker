@@ -110,6 +110,7 @@ type Config = {
   hasApiKey: boolean;
 };
 type Boot = {
+  access: "public" | "private";
   product: { id: string; name: string; repo: string };
   settings: Config;
   templates: Template[];
@@ -136,7 +137,10 @@ async function api(url: string, options: RequestInit = {}) {
     },
   });
   const data = await response.json();
-  if (!response.ok) throw new Error(data.error || "请求失败");
+  if (!response.ok)
+    throw Object.assign(new Error(data.error || "请求失败"), {
+      status: response.status,
+    });
   return data;
 }
 function time(value: string) {
@@ -148,7 +152,13 @@ function time(value: string) {
   });
 }
 function providerLabel(p: string) {
-  return p === "codex" ? "Codex" : p === "openai" ? "API 模型" : "演示模式";
+  return p === "public"
+    ? "公开示例"
+    : p === "codex"
+      ? "Codex"
+      : p === "openai"
+        ? "API 模型"
+        : "演示模式";
 }
 function statusLabel(s: string) {
   return (
@@ -194,9 +204,26 @@ function App() {
   const fileRef = useRef<HTMLInputElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const factory = boot?.product.id === "factory";
+  const isPublic = boot?.access === "public";
+  const [loginDestination, setLoginDestination] = useState("home");
+  function login(destination = "home") {
+    if (boot) {
+      setLoginDestination(destination);
+      setLocked(boot.product);
+    }
+  }
   async function refresh() {
     try {
-      const data = await api("/bootstrap");
+      const auth = await api("/auth");
+      const data = await api(
+        auth.authenticated ? "/bootstrap" : "/public/bootstrap",
+      );
+      if (!auth.authenticated) {
+        setSelectedJob(null);
+        setProject(null);
+        setSelectedDocs([]);
+        setPage("home");
+      }
       setBoot(data);
       setFatal("");
       return data as Boot;
@@ -206,12 +233,7 @@ function App() {
     }
   }
   useEffect(() => {
-    api("/auth")
-      .then((a) => {
-        if (!a.authenticated) setLocked(a.product);
-        else refresh();
-      })
-      .catch((e) => setFatal(e.message));
+    refresh();
   }, []);
   useEffect(() => {
     if (toast) {
@@ -237,6 +259,10 @@ function App() {
     return () => clearInterval(timer);
   }, [running]);
   function navigate(next: string) {
+    if (isPublic && ["documents", "settings"].includes(next)) {
+      login(next);
+      return;
+    }
     setPage(next);
     setSelectedJob(null);
     setProject(null);
@@ -244,10 +270,18 @@ function App() {
     setSidebar(false);
   }
   async function act(fn: () => Promise<void>) {
+    if (isPublic) {
+      login();
+      return;
+    }
     try {
       setBusy(true);
       await fn();
     } catch (e) {
+      if ((e as Error & { status?: number }).status === 401) {
+        await refresh();
+        setLocked(boot!.product);
+      }
       setToast((e as Error).message);
     } finally {
       setBusy(false);
@@ -314,9 +348,16 @@ function App() {
     return (
       <LoginScreen
         product={locked}
+        onCancel={() => setLocked(null)}
         onLogin={async () => {
+          const data = await refresh();
+          if (!data || data.access !== "private")
+            throw new Error("登录状态未就绪，请重试。");
+          setSelectedJob(null);
+          setProject(null);
+          setSelectedDocs([]);
+          setPage(loginDestination);
           setLocked(null);
-          await refresh();
         }}
       />
     );
@@ -347,13 +388,13 @@ function App() {
   const nav = factory
     ? [
         ["home", "工作台", LayoutDashboard],
-        ["projects", "我的产品", Box],
-        ["jobs", "生成记录", History],
+        ["projects", isPublic ? "产品示例" : "我的产品", Box],
+        ["jobs", isPublic ? "生成示例" : "生成记录", History],
         ["templates", "模板库", Layers],
       ]
     : [
         ["home", "工作台", LayoutDashboard],
-        ["jobs", "任务中心", ListChecks],
+        ["jobs", isPublic ? "任务示例" : "任务中心", ListChecks],
         ["documents", "资料库", FolderOpen],
         ["artifacts", "交付物", FileText],
       ];
@@ -401,7 +442,8 @@ function App() {
         <div className="workspace">
           <span className="workspace-avatar">Y</span>
           <div>
-            我的工作空间<small>AI 产品经理</small>
+            {isPublic ? "公开体验空间" : "我的工作空间"}
+            <small>AI 产品经理</small>
           </div>
           <ChevronsUpDown size={14} />
         </div>
@@ -463,15 +505,17 @@ function App() {
             rel="noreferrer"
           >
             <Code2 size={18} />
-            开源项目
+            项目仓库
             <ArrowUpRight size={14} />
           </a>
           <div className="profile">
             <span>Y</span>
             <div>
-              Yiheng
+              {isPublic ? "访客" : "Yiheng"}
               <small>
-                个人工作空间 · {boot.settings.cloud ? "私有云存储" : "本地存储"}
+                {isPublic
+                  ? "固定示例 · 无需登录"
+                  : `个人工作空间 · ${boot.settings.cloud ? "私有云存储" : "本地存储"}`}
               </small>
             </div>
           </div>
@@ -487,7 +531,9 @@ function App() {
             >
               <Menu size={19} />
             </button>
-            <span className="breadcrumb">我的工作空间</span>
+            <span className="breadcrumb">
+              {isPublic ? "公开体验空间" : "我的工作空间"}
+            </span>
             <span className="slash">/</span>
             <b>{pageTitle}</b>
           </div>
@@ -502,10 +548,24 @@ function App() {
               {providerLabel(boot.settings.provider)}
               <ChevronDown size={12} />
             </button>
-            <span className="top-avatar">Y</span>
+            {isPublic ? (
+              <button className="primary small-button" onClick={() => login()}>
+                登录工作空间
+              </button>
+            ) : (
+              <span className="top-avatar">Y</span>
+            )}
           </div>
         </header>
         <main className={project ? "content studio-content" : "content"}>
+          {isPublic && (
+            <div className="public-notice" role="note">
+              <b>公开体验</b>
+              <span>
+                以下均为虚构示例。可浏览界面、查看交付物和试用原型；私人资料、模型设置与生成操作需登录。
+              </span>
+            </div>
+          )}
           {fatal && (
             <div className="error-banner">
               <AlertCircle size={17} />
@@ -655,7 +715,11 @@ function App() {
                     <button
                       type="button"
                       className="text-button"
-                      onClick={() => setAttachOpen(!attachOpen)}
+                      onClick={() =>
+                        isPublic
+                          ? login("documents")
+                          : setAttachOpen(!attachOpen)
+                      }
                     >
                       <Paperclip size={16} />
                       添加资料
@@ -708,7 +772,13 @@ function App() {
                     ) : (
                       <ArrowUp size={17} />
                     )}
-                    <span>{factory ? "开始创造" : "开始任务"}</span>
+                    <span>
+                      {isPublic
+                        ? "登录后生成"
+                        : factory
+                          ? "开始创造"
+                          : "开始任务"}
+                    </span>
                   </button>
                 </div>
               </form>
@@ -806,7 +876,11 @@ function App() {
               </section>
               <div className="home-footnote">
                 <span className="tiny-dot" />
-                {boot.settings.cloud ? "私有云工作空间" : "本地工作空间"}
+                {isPublic
+                  ? "公开示例空间"
+                  : boot.settings.cloud
+                    ? "私有云工作空间"
+                    : "本地工作空间"}
                 <span>·</span>模型按你的选择连接<span>·</span>产出由你掌握
               </div>
             </>
@@ -956,7 +1030,7 @@ function App() {
                           </button>
                           <a
                             className="secondary small-button"
-                            href={`/api/jobs/${selectedJob.id}/download`}
+                            href={`/api/${isPublic ? "public/" : ""}jobs/${selectedJob.id}/download`}
                             download
                           >
                             <Download size={14} />
@@ -972,6 +1046,7 @@ function App() {
                             <label key={i} className={a.done ? "done" : ""}>
                               <input
                                 type="checkbox"
+                                disabled={isPublic}
                                 checked={!!a.done}
                                 onChange={() =>
                                   act(async () => {
@@ -1293,7 +1368,7 @@ function App() {
                 </select>
                 <a
                   className="primary small-button"
-                  href={`/api/projects/${project.id}/download?version=${activeVersion.id}`}
+                  href={`/api/${isPublic ? "public/" : ""}projects/${project.id}/download?version=${activeVersion.id}`}
                   download
                 >
                   <Download size={15} />
@@ -1412,7 +1487,9 @@ function App() {
                     <span>
                       {activeVersion.provider === "demo"
                         ? "内置演示模板"
-                        : "AI 生成原型"}{" "}
+                        : isPublic
+                          ? "预置示例原型"
+                          : "AI 生成原型"}{" "}
                       · 请验证业务逻辑
                     </span>
                   </div>
@@ -1783,9 +1860,11 @@ function SettingsPanel({
 function LoginScreen({
   product,
   onLogin,
+  onCancel,
 }: {
   product: { name: string; id: string };
   onLogin: () => Promise<void>;
+  onCancel: () => void;
 }) {
   const [password, setPassword] = useState(""),
     [error, setError] = useState(""),
@@ -1843,7 +1922,10 @@ function LoginScreen({
           )}
           进入工作空间
         </button>
-        <small>你的资料与交付物，保存在受保护的私有空间。</small>
+        <small>私人资料、模型配置与生成操作需要登录。</small>
+        <button type="button" className="secondary" onClick={onCancel}>
+          返回公开体验
+        </button>
       </form>
     </div>
   );

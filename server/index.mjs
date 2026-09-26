@@ -1,3 +1,4 @@
+import { publicBootstrap } from "./public-examples.mjs";
 import express from "express";
 import multer from "multer";
 import JSZip from "jszip";
@@ -59,6 +60,8 @@ app.use((req, res, next) => {
   if (req.headers["sec-fetch-site"] === "cross-site")
     return res.status(403).json({ error: "不允许跨站请求。" });
   res.setHeader("X-Content-Type-Options", "nosniff");
+  if (req.path.startsWith("/api/"))
+    res.setHeader("Cache-Control", "private, no-store");
   res.setHeader("Referrer-Policy", "no-referrer");
   next();
 });
@@ -81,6 +84,32 @@ app.post("/api/logout", (_, res) => {
     "pm_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0",
   );
   res.json({ ok: true });
+});
+app.get("/api/public/bootstrap", (_, res) =>
+  res.json(publicBootstrap(product, cloud)),
+);
+app.get("/api/public/jobs/:id/download", (req, res) => {
+  const job = publicBootstrap(product, cloud).jobs.find(
+    (j) => j.id === req.params.id,
+  );
+  if (!job?.result.markdown)
+    return res.status(404).json({ error: "公开示例不存在。" });
+  res.attachment("public-example.md").send(job.result.markdown);
+});
+app.get("/api/public/projects/:id/download", async (req, res) => {
+  const project = publicBootstrap(product, cloud).projects.find(
+    (p) => p.id === req.params.id,
+  );
+  const version = project?.versions.find(
+    (v) => !req.query.version || v.id === req.query.version,
+  );
+  if (!version) return res.status(404).json({ error: "公开示例不存在。" });
+  const zip = new JSZip();
+  zip.file("index.html", version.code);
+  zip.file("PRD.md", version.prd);
+  res
+    .attachment("public-example.zip")
+    .send(await zip.generateAsync({ type: "nodebuffer" }));
 });
 app.use("/api", (req, res, next) => {
   if (req.path === "/health") return next();
@@ -134,6 +163,7 @@ app.get("/api/bootstrap", async (_, res) => {
   ]);
   res.json({
     product,
+    access: "private",
     settings: config,
     templates: mode === "worker" ? workerTemplates : factoryTemplates,
     jobs,

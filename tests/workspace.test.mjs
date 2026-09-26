@@ -250,10 +250,95 @@ test("model JSON validation rejects incomplete artifacts", () => {
   assert.throws(() => parseResult('{"title":"missing"}', fragmentSchema));
 });
 
- test("extracts text from PDF in the deployed-compatible parser", async () => {
- const form = new FormData();
- form.append("file", new Blob([readFileSync(new URL("./fixtures/material.pdf", import.meta.url))]), "material.pdf");
- const r = await fetch(base+"/api/documents", {method:"POST",headers:{Cookie:cookie},body:form});
- assert.equal(r.status,201);
- const result=await r.json();assert.ok(result.chars>20);
- });
+test("extracts text from PDF in the deployed-compatible parser", async () => {
+  const form = new FormData();
+  form.append(
+    "file",
+    new Blob([
+      readFileSync(new URL("./fixtures/material.pdf", import.meta.url)),
+    ]),
+    "material.pdf",
+  );
+  const r = await fetch(base + "/api/documents", {
+    method: "POST",
+    headers: { Cookie: cookie },
+    body: form,
+  });
+  assert.equal(r.status, 201);
+  const result = await r.json();
+  assert.ok(result.chars > 20);
+});
+
+test("public fixtures never expose private state and private actions still require login", async () => {
+  const anon = async (path, method = "GET") =>
+    fetch(base + "/api" + path, {
+      method,
+      headers: { "Content-Type": "application/json" },
+      ...(method === "GET" ? {} : { body: "{}" }),
+    });
+  const response = await anon("/public/bootstrap");
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("cache-control"), /no-store/);
+  const publicData = await response.json();
+  assert.equal(publicData.access, "public");
+  assert.deepEqual(publicData.documents, []);
+  assert.equal(publicData.settings.baseUrl, "");
+  assert.equal(publicData.settings.model, "");
+  assert.equal(publicData.settings.hasApiKey, false);
+  assert.ok(
+    publicData.jobs.every(
+      (j) => j.id.startsWith("public-") && j.documentIds.length === 0,
+    ),
+  );
+  const privateData = (await json("/bootstrap")).data;
+  assert.equal(privateData.access, "private");
+  for (const item of [
+    ...privateData.jobs,
+    ...privateData.documents,
+    ...privateData.projects,
+  ])
+    assert.ok(!JSON.stringify(publicData).includes(item.id));
+  for (const [path, method] of [
+    ["/bootstrap", "GET"],
+    ["/jobs/" + job.id, "GET"],
+    ["/jobs/" + job.id + "/download", "GET"],
+    ["/jobs", "POST"],
+    ["/settings", "PUT"],
+    ["/documents", "POST"],
+    ["/documents/" + docId, "DELETE"],
+    ["/jobs/" + job.id + "/retry", "POST"],
+    ["/jobs/" + job.id + "/actions/0", "PATCH"],
+    ["/projects/private/download", "GET"],
+    ["/projects/private/revise", "POST"],
+  ])
+    assert.equal((await anon(path, method)).status, 401, path);
+  assert.equal(
+    (await anon("/public/jobs/" + job.id + "/download")).status,
+    404,
+  );
+  assert.equal((await anon("/public/projects/private/download")).status, 404);
+  const path =
+    product.id === "worker"
+      ? "/public/jobs/public-worker/download"
+      : "/public/projects/public-factory-project/download?version=public-version";
+  const download = await anon(path);
+  assert.equal(download.status, 200);
+  if (product.id === "factory") {
+    const zip = await JSZip.loadAsync(await download.arrayBuffer());
+    assert.ok(zip.file("index.html"));
+    assert.ok(zip.file("PRD.md"));
+    assert.equal(
+      (
+        await anon(
+          "/public/projects/public-factory-project/download?version=private",
+        )
+      ).status,
+      404,
+    );
+  } else assert.match(await download.text(), /公开示例/);
+  assert.deepEqual(await (await anon("/public/bootstrap")).json(), publicData);
+  const logout = await request("/logout", { method: "POST" });
+  assert.match(logout.headers.get("set-cookie"), /Max-Age=0/);
+  assert.equal((await anon("/bootstrap")).status, 401);
+  assert.equal((await anon("/public/bootstrap")).status, 200);
+});

@@ -2568,3 +2568,29 @@ a.primary {
     font-size: 10px;
   }
 }
+
+.public-notice {
+  display: flex;
+  gap: 12px;
+  align-items: baseline;
+  padding: 14px 18px;
+  margin-bottom: 24px;
+  border: 1px solid #ddd7c8;
+  border-radius: 12px;
+  background: #faf6ea;
+  color: #665b3e;
+  font-size: 13px;
+  line-height: 1.7;
+}
+.public-notice b {
+  white-space: nowrap;
+}
+@media (max-width: 600px) {
+  .public-notice {
+    flex-direction: column;
+    gap: 4px;
+  }
+  .topbar .breadcrumb {
+    display: none;
+  }
+}
