@@ -49,7 +49,7 @@ test("项目隔离、记忆纠正、云端边界与证据包", async () => {
     const q = (await req("/projects", "POST", { name: "项目乙", background: "这是乙项目的独立背景资料。" })).data;
     assert.notEqual(p.id, q.id);
     assert.equal(await store.get(p.id, "agent-run"), null);
-    assert.equal((await req("/projects/" + p.id, "PATCH", { memory: [{ id: "m1", text: "团队一人", source: "用户纠正" }] })).status, 200);
+    assert.equal((await req("/projects/" + p.id, "PATCH", { memory: [{ id: "m1", text: "团队一人", source: "用户纠正" }], expectedRevision: p.memoryRevision ?? 0 })).status, 200);
     assert.equal((await req("/runs", "POST", { projectId: p.id, prompt: "请回忆当前项目的团队规模", kind: "recall" })).status, 409);
     assert.equal(seen.length, 0);
     const recordPath = join(dir, ".runtime/records/project/model-call.json");

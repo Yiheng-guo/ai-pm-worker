@@ -6,6 +6,7 @@ import { join, resolve } from "node:path";
 import JSZip from "jszip";
 import { getRuntimeStatus, runNanobot } from "./nanobot-runtime.mjs";
 import { discoverSources, fetchEvidence } from "./evidence.mjs";
+import { prepareMemoryProject, requireMemoryRevision, replaceMemory, changeMemory, addMemory, restoreMemory, runtimeProject } from "./project-memory.mjs";
 
 const now = () => new Date().toISOString();
 const memorySchema = z.object({ id: z.string().min(1), text: z.string().min(1).max(2000), source: z.string().max(300).default("用户确认"), updatedAt: z.string().default(now) });
@@ -16,12 +17,14 @@ const projectSchema = z.object({
   constraints: z.string().max(5000).default(""),
   memory: z.array(memorySchema).max(30).default([]),
 });
+const revisionSchema = z.object({ expectedRevision: z.number().int().nonnegative(), confirm: z.literal(true), reason: z.string().max(2000).optional() });
 const runSchema = z.object({
   projectId: z.string().min(1).max(100),
   prompt: z.string().trim().min(5).max(12000),
   kind: z.enum(["research", "prototype", "recall"]).default("research"),
   sessionId: z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/).optional(),
   sourceUrls: z.array(z.string().url().max(1500)).max(4).default([]),
+  sourceIds: z.array(z.string().min(1).max(100)).max(4).default([]),
   parentRunId: z.string().max(100).optional(),
 });
 const safeId = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/);
@@ -29,11 +32,14 @@ const emptyUsage = () => ({ inputTokens: null, outputTokens: null, cachedTokens:
 const knownStatus = ["queued", "running"];
 const readyStatus = ["completed", "failed", "cancelled"];
 
-export async function createAgentRouter({ store, settings, root, cloud, runner = runNanobot, runtimeStatus = getRuntimeStatus }) {
+export async function createAgentRouter({ store, settings, root, cloud, runner = runNanobot, runtimeStatus = getRuntimeStatus, evidenceFetcher = fetchEvidence, sourceDiscoverer = discoverSources }) {
   const router = express.Router();
   const controllers = new Map();
   const projectLocks = new Set();
   const eventWrites = new Map();
+  const actionWrites = new Map();
+  const pendingKeys = new Map();
+  const projectEdits = new Set();
   const foundryBase = process.env.FOUNDRY_URL || "http://127.0.0.1:4320";
   const foundry = new URL(foundryBase);
   if (!["127.0.0.1", "localhost"].includes(foundry.hostname) || foundry.protocol !== "http:")
@@ -57,7 +63,7 @@ export async function createAgentRouter({ store, settings, root, cloud, runner =
   async function project(id) {
     const p = await store.get(id, "research-project");
     if (!p) throw Object.assign(new Error("项目不存在。"), { status: 404 });
-    return p;
+    return prepareMemoryProject(p);
   }
   async function findRun(id) {
     const run = await store.get(id, "agent-run");
@@ -81,29 +87,56 @@ export async function createAgentRouter({ store, settings, root, cloud, runner =
     } catch {}
     return { ...runtime, provider: config.provider, model: config.model || (config.provider === "codex" ? "Codex 账号默认模型" : ""), foundryAvailable };
   }
-  router.get("/bootstrap", async (_, res) => {
+  function compactRun({ raw, sources = [], prototype, ...run }) {
+    return { ...run, sources: sources.map(({ raw, text, ...source }) => source), ...(prototype ? { prototype: { ...prototype, code: undefined, prd: undefined } } : {}), detailAvailable: true };
+  }
+  function compactEvaluation({ cases, raw, ...report }) { return { ...report, caseCount: cases?.length || 0, detailAvailable: true }; }
+  router.get("/bootstrap", async (req, res) => {
     const config = await settings();
+    const compact = req.query.full !== "1" && req.query.compact !== "0";
     const [projects, runs, evaluations, runtime] = await Promise.all([
       store.list("research-project"), store.list("agent-run"), store.list("evaluation"), status(),
     ]);
     res.json({
-      projects, runs: runs.map(({ raw, sources, ...run }) => ({ ...run, sources: sources.map(({ raw, ...s }) => s) })),
-      evaluations, runtime,
+      projects: projects.map(p => { const prepared = prepareMemoryProject(p); if (!compact) return prepared; const { memoryHistory, ...summary } = prepared; return summary; }), runs: compact ? runs.map(compactRun) : runs.map(({ raw, sources, ...run }) => ({ ...run, sources: (sources || []).map(({ raw, ...s }) => s) })),
+      evaluations: compact ? evaluations.map(compactEvaluation) : evaluations, runtime, compact,
       settings: { provider: config.provider, baseUrl: config.baseUrl, model: config.model, hasApiKey: !!(config.apiKey || process.env.OPENAI_API_KEY), cloud },
     });
   });
   router.post("/projects", async (req, res) => {
     const input = projectSchema.parse(req.body);
-    const p = { ...input, id: randomUUID(), decisions: [], createdAt: now(), updatedAt: now() };
+    const p = replaceMemory({ ...input, memory: [], id: randomUUID(), decisions: [], createdAt: now(), updatedAt: now() }, input.memory);
     await store.put("research-project", p); res.status(201).json(p);
   });
   router.patch("/projects/:id", async (req, res) => {
-    const p = await project(req.params.id);
+    let p = await project(req.params.id);
     const change = projectSchema.partial().parse(req.body);
-    if (projectLocks.has(p.id)) return res.status(409).json({ error: "项目任务正在执行。请完成或取消后再纠正项目记忆，避免上下文不一致。" });
-    Object.assign(p, change, { updatedAt: now() });
-    await store.put("research-project", p); res.json(p);
+    if (projectLocks.has(p.id) || projectEdits.has(p.id)) return res.status(409).json({ error: "项目正在执行或修改。请完成或取消后再纠正项目记忆，避免上下文不一致。" });
+    projectEdits.add(p.id);
+    try {
+      p = await project(req.params.id);
+      if (change.memory) { requireMemoryRevision(p, req.body.expectedRevision); p = replaceMemory(p, change.memory); delete change.memory; }
+      Object.assign(p, change, { updatedAt: now() });
+      await store.put("research-project", p); res.json(p);
+    } finally { projectEdits.delete(p.id); }
   });
+  router.get("/projects/:id/memory", async (req, res) => { const p = await project(req.params.id); res.json({ memory: p.memory, history: p.memoryHistory, revision: p.memoryRevision }); });
+  async function editMemory(req, res, apply) {
+    let p = await project(req.params.id);
+    if (projectLocks.has(p.id) || projectEdits.has(p.id)) throw Object.assign(new Error("项目正在执行或修改，请稍后再确认记忆。"), { status: 409 });
+    projectEdits.add(p.id);
+    try { p = await project(req.params.id); const input = apply.schema.parse(req.body); requireMemoryRevision(p, input.expectedRevision); p = apply.change(p, input); await store.put("research-project", p); res.json(p); }
+    finally { projectEdits.delete(p.id); }
+  }
+  router.post("/projects/:id/memory", async (req, res) => editMemory(req, res, {
+    schema: revisionSchema.extend({ text: z.string().trim().min(1).max(2000), source: z.string().max(300).default("用户确认") }), change: (p, input) => addMemory(p, input),
+  }));
+  router.patch("/projects/:id/memory/:memoryId", async (req, res) => editMemory(req, res, {
+    schema: revisionSchema.extend({ text: z.string().trim().min(1).max(2000).optional(), source: z.string().max(300).optional(), active: z.literal(false).optional() }).refine(i => i.text !== undefined || i.source !== undefined || i.active === false), change: (p, input) => changeMemory(p, req.params.memoryId, input),
+  }));
+  router.post("/projects/:id/memory/:memoryId/restore", async (req, res) => editMemory(req, res, {
+    schema: revisionSchema.extend({ revisionId: z.string().min(1).max(100) }), change: (p, input) => restoreMemory(p, req.params.memoryId, input.revisionId, input.reason),
+  }));
   async function foundryRequest(path, options, signal, cookie = "") {
     const response = await fetch(foundryBase + "/api" + path, {
       ...options, headers: { "Content-Type": "application/json", ...(cookie ? { Cookie: cookie } : {}) },
@@ -180,12 +213,17 @@ export async function createAgentRouter({ store, settings, root, cloud, runner =
         await generatePrototype(run, parent, signal);
       } else {
         if (run.kind === "research") {
-          const urls = await discoverSources(run.prompt, run.sourceUrls, root, signal, message => { if (!signal.aborted) void event(run, message).catch(() => {}); });
-          if (!urls.length) throw new Error("未找到可读取的来源。请补充竞品官网、GitHub 或官方文档链接。");
+          const urls = run.sourceIds.length && !run.sourceUrls.length ? [] : await sourceDiscoverer(run.prompt, run.sourceUrls, root, signal, message => { if (!signal.aborted) void event(run, message).catch(() => {}); });
+          if (!urls.length && !run.sources.length) throw new Error("未找到可读取的来源。请补充竞品官网、GitHub 或官方文档链接。");
+          const seenUrls = new Set(run.sources.map(source => normalizeUrl(source.url)));
           for (const url of urls) {
+            const canonical = normalizeUrl(url);
+            if (seenUrls.has(canonical)) continue;
+            if (seenUrls.size >= 4) throw new Error("每次研究最多读取或复用 4 个不同来源，请减少来源后重试。");
+            seenUrls.add(canonical);
             signal.throwIfAborted();
             await event(run, "正在读取证据：" + new URL(url).hostname);
-            const source = await fetchEvidence(url, signal);
+            const source = await evidenceFetcher(url, signal);
             run.sources.push(source); await store.put("agent-run", run);
           }
           if (!run.sources.some(s => s.status === "fetched")) throw new Error("来源均未读取成功。失败原因已记录，请更换来源链接。");
@@ -193,7 +231,7 @@ export async function createAgentRouter({ store, settings, root, cloud, runner =
         signal.throwIfAborted();
         await event(run, "nanobot 正在结合项目背景形成判断与需求");
         const output = await runner({
-          project: run.raw.project, prompt: run.prompt,
+          project: runtimeProject(run.raw.project), prompt: run.prompt,
           sources: run.sources.filter(s => s.status === "fetched").map(({ raw, ...source }) => source), history: run.raw.history,
           sessionId: run.sessionId, kind: run.kind, settings: await settings(), signal,
           onEvent: message => { if (!signal.aborted) void event(run, typeof message === "string" ? message : message?.message || JSON.stringify(message)).catch(() => {}); },
@@ -224,16 +262,57 @@ export async function createAgentRouter({ store, settings, root, cloud, runner =
       if (error.usage) run.usage = error.usage;
       run.completedAt = now(); await event(run, run.error);
     } finally {
-      controllers.delete(run.id); projectLocks.delete(run.projectId);
-      await eventWrites.get(run.id)?.catch(() => {});
-      await store.put("agent-run", run);
-      eventWrites.delete(run.id);
+      try {
+        await eventWrites.get(run.id)?.catch(() => {});
+        await store.put("agent-run", run);
+      } finally {
+        controllers.delete(run.id); projectLocks.delete(run.projectId);
+        eventWrites.delete(run.id);
+      }
     }
+  }
+  function normalizeUrl(value) { const url = new URL(value); url.hash = ""; return url.href; }
+  async function reusableSources(input) {
+    if (input.sourceIds.length && input.kind !== "research") throw new Error("只有研究任务可以显式复用证据快照。");
+    if (!input.sourceIds.length) return [];
+    const all = await store.list("agent-run");
+    const sources = [];
+    const seen = new Set();
+    const selectedHashes = new Map();
+    const reusedAt = now();
+    for (const id of [...new Set(input.sourceIds)]) {
+      const valid = s => s.id === id && s.status === "fetched" && typeof s.text === "string" && s.text.length && typeof s.raw === "string" && /^[a-f0-9]{64}$/.test(s.sha256 || "") && createHash("sha256").update(s.raw).digest("hex") === s.sha256;
+      const matches = all.filter(r => r.projectId === input.projectId && r.sources?.some(valid));
+      if (!matches.length) throw Object.assign(new Error("只能复用本项目已读取成功的证据快照；来源不存在、读取失败或属于其他项目。"), { status: 400 });
+      const original = matches.sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || ""))[0];
+      const source = structuredClone(original.sources.find(valid));
+      const canonical = normalizeUrl(source.url);
+      if (seen.has(canonical)) {
+        if (selectedHashes.get(canonical) !== source.sha256) throw new Error("同一地址的不同快照不能混用，请明确选择一个历史版本。");
+        continue;
+      }
+      seen.add(canonical);
+      selectedHashes.set(canonical, source.sha256);
+      const originalRunId = source.reusedFrom?.originalRunId || original.id;
+      source.reusedFrom = { runId: original.id, originalRunId, sourceId: source.id, fetchedAt: source.fetchedAt || null, sha256: source.sha256 || null };
+      source.reusedAt = reusedAt;
+      const age = source.fetchedAt ? (Date.parse(reusedAt) - Date.parse(source.fetchedAt)) / 1000 : NaN;
+      source.ageAtReuseSeconds = Number.isFinite(age) ? Math.max(0, Math.floor(age)) : null;
+      source.freshness = "saved-snapshot-not-refetched";
+      sources.push(source);
+    }
+    for (const url of input.sourceUrls) {
+      const canonical = normalizeUrl(url);
+      if (selectedHashes.has(canonical)) throw new Error("同一地址不能同时复用快照和重新抓取，请选择一种读取方式。");
+      seen.add(canonical);
+    }
+    if (seen.size > 4) throw new Error("每次研究最多读取或复用 4 个不同来源。");
+    return sources;
   }
   async function start(body, req) {
     if (cloud) throw Object.assign(new Error("此版本需要本机 nanobot 常驻进程。云端旧文档工作台可继续使用。"), { status: 409 });
     const input = runSchema.parse(body);
-    const p = await project(input.projectId);
+    let p = await project(input.projectId);
     const key = req?.get("Idempotency-Key");
     const requestHash = createHash("sha256").update(JSON.stringify(input)).digest("hex");
     if (key) {
@@ -243,29 +322,38 @@ export async function createAgentRouter({ store, settings, root, cloud, runner =
         if (prior.requestHash !== requestHash) throw Object.assign(new Error("同一幂等键不能用于不同任务。"), { status: 409 });
         return prior;
       }
+      if (pendingKeys.has(key)) throw Object.assign(new Error("同一幂等请求正在提交，请稍后查询；不会重复发起模型调用。"), { status: 409 });
     }
-    if (projectLocks.has(p.id) || controllers.size >= 2) throw Object.assign(new Error("已有任务执行中，请完成或取消后继续。"), { status: 409 });
-    const config = await settings();
-    if (!["codex", "openai"].includes(config.provider)) throw new Error("请先在设置中选择本机 Codex 或可用 API。研究助理不使用模板冒充真实结果。");
-    const runtime = await runtimeStatus();
-    if (!runtime.installed && input.kind !== "prototype") throw new Error("nanobot 运行环境未就绪，请执行 npm run agent:setup。");
-    if (input.kind === "prototype") {
-      const parent = await findRun(input.parentRunId);
-      if (parent.projectId !== p.id || parent.status !== "completed" || !parent.result?.requirements?.length)
-        throw new Error("请先完成本项目的研究需求，再生成原型。");
-    }
-    const history = (await store.list("agent-run")).filter(r => r.projectId === p.id && r.status === "completed" && r.kind !== "prototype").sort((a, b) => a.createdAt.localeCompare(b.createdAt)).slice(-3)
-      .map(r => ({ prompt: r.prompt, result: r.result, sessionId: r.sessionId, createdAt: r.createdAt }));
-    const run = {
-      ...input, id: randomUUID(), sessionId: input.sessionId || randomUUID().replaceAll("-", ""), status: "queued",
-      stage: "排队中", events: [], sources: [], result: null, usage: emptyUsage(), error: null,
-      createdAt: now(), parentRunId: input.parentRunId || null, idempotencyKey: key || null, requestHash,
-      raw: { project: structuredClone(p), history, request: input },
-    };
-    await store.put("agent-run", run);
-    const controller = new AbortController(); controllers.set(run.id, controller); projectLocks.add(p.id);
-    void execute(run, controller);
-    return run;
+    if (projectLocks.has(p.id) || projectEdits.has(p.id) || controllers.size >= 2) throw Object.assign(new Error("已有任务执行或修改中，请完成或取消后继续。"), { status: 409 });
+    const runId = randomUUID();
+    const controller = new AbortController(); controllers.set(runId, controller); projectLocks.add(p.id);
+    if (key) pendingKeys.set(key, requestHash);
+    try {
+      p = await project(input.projectId);
+      const config = await settings();
+      if (!["codex", "openai"].includes(config.provider)) throw new Error("请先在设置中选择本机 Codex 或可用 API。研究助理不使用模板冒充真实结果。");
+      const runtime = await runtimeStatus();
+      if (!runtime.installed && input.kind !== "prototype") throw new Error("nanobot 运行环境未就绪，请执行 npm run agent:setup。");
+      if (input.kind === "prototype") {
+        const parent = await findRun(input.parentRunId);
+        if (parent.projectId !== p.id || parent.status !== "completed" || !parent.result?.requirements?.length)
+          throw new Error("请先完成本项目的研究需求，再生成原型。");
+      }
+      const sources = await reusableSources(input);
+      const memoryKey = current => JSON.stringify((current?.memory || []).filter(m => !m.status || m.status === "active").map(m => [m.id, m.text, m.source || "用户确认"]).sort((a, b) => a[0].localeCompare(b[0])));
+      const history = (await store.list("agent-run")).filter(r => r.projectId === p.id && r.status === "completed" && r.kind !== "prototype" && memoryKey(r.raw?.project) === memoryKey(p) && (!p.memoryUpdatedAt || r.createdAt >= p.memoryUpdatedAt)).sort((a, b) => a.createdAt.localeCompare(b.createdAt)).slice(-3)
+        .map(r => ({ runId: r.id, prompt: r.prompt, result: { ...r.result, memoryUpdates: [] }, sessionId: r.sessionId, createdAt: r.createdAt, historical: true, memoryRevision: r.raw?.project?.memoryRevision ?? 0 }));
+      const run = {
+        ...input, id: runId, sessionId: input.sessionId || randomUUID().replaceAll("-", ""), status: "queued",
+        stage: "排队中", events: [], sources, result: null, usage: emptyUsage(), error: null,
+        createdAt: now(), parentRunId: input.parentRunId || null, idempotencyKey: key || null, requestHash,
+        raw: { project: structuredClone(p), history, request: input },
+      };
+      await store.put("agent-run", run);
+      void execute(run, controller);
+      return run;
+    } catch (error) { controllers.delete(runId); projectLocks.delete(p.id); throw error; }
+    finally { if (key) pendingKeys.delete(key); }
   }
   router.post("/runs", async (req, res) => res.status(202).json(await start(req.body, req)));
   router.get("/runs/:id", async (req, res) => res.json(await findRun(req.params.id)));
@@ -282,11 +370,20 @@ export async function createAgentRouter({ store, settings, root, cloud, runner =
     await store.put("agent-run", run); res.json(run);
   });
   router.patch("/runs/:id/actions/:actionId", async (req, res) => {
-    const run = await findRun(req.params.id);
-    const done = z.object({ done: z.boolean() }).parse(req.body).done;
-    const action = run.result?.actions?.find(a => a.id === req.params.actionId);
-    if (!action) throw Object.assign(new Error("待办不存在。"), { status: 404 });
-    action.done = done; action.updatedAt = now(); await store.put("agent-run", run); res.json(run);
+    const validDate = value => { const date = new Date(value + "T00:00:00Z"); return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value; };
+    const change = z.object({ done: z.boolean().optional(), note: z.string().max(4000).optional(), dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(validDate).nullable().optional() }).refine(i => Object.keys(i).length > 0).parse(req.body);
+    const id = req.params.id;
+    const write = (actionWrites.get(id) || Promise.resolve()).catch(() => {}).then(async () => {
+    const run = await findRun(id);
+    if (controllers.has(id)) throw Object.assign(new Error("任务正在保存最终记录，请稍后再更新待办。"), { status: 409 });
+    if (run.status !== "completed" || (run.kind && !["research", "recall"].includes(run.kind))) throw Object.assign(new Error("只能跟进已完成研究或回忆任务中的有效行动项。"), { status: 409 });
+      const matches = run.result?.actions?.filter(a => a.id === req.params.actionId) || [];
+      if (!matches.length) throw Object.assign(new Error("待办不存在。"), { status: 404 });
+      if (matches.length !== 1) throw Object.assign(new Error("行动项 ID 重复，无法安全定位，请核对原始结果。"), { status: 409 });
+      Object.assign(matches[0], change, { updatedAt: now() }); await store.put("agent-run", run); return run;
+    });
+    actionWrites.set(id, write);
+    try { res.json(await write); } finally { if (actionWrites.get(id) === write) actionWrites.delete(id); }
   });
   router.get("/runs/:id/export", async (req, res) => {
     const run = await findRun(req.params.id);
@@ -329,6 +426,11 @@ export async function createAgentRouter({ store, settings, root, cloud, runner =
     res.attachment("yiban-prototype.zip").type("application/zip").send(await zip.generateAsync({ type: "nodebuffer" }));
   });
   router.get("/evaluations", async (_, res) => res.json(await store.list("evaluation")));
+  router.get("/evaluations/:id", async (req, res) => {
+    const report = await store.get(safeId.parse(req.params.id), "evaluation");
+    if (!report) throw Object.assign(new Error("评测不存在。"), { status: 404 });
+    res.json(report);
+  });
   router.get("/evaluations/:id/export", async (req, res) => {
     const id = safeId.parse(req.params.id);
     const report = await store.get(id, "evaluation");

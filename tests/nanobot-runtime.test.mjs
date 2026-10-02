@@ -63,6 +63,33 @@ print(json.dumps({'type':'turn.completed',**({} if 'UNREPORTED_USAGE_TEST' in te
     assert.ok(!recorded.messages[0].content.includes("OLD_MEMORY"));
     const fresh = await runNanobot({ ...input, project: { ...project, memory: ["用户纠正 NEW_MEMORY"] }, sessionId: "fresh" });
     assert.equal(fresh.raw.session.previousMessageCount, 0);
+    const guarded = await runNanobot({ ...input, sessionId: "memory-projection", project: {
+      ...project,
+      memory: [
+        { id: "active", text: "ACTIVE_VERIFIED_MEMORY", status: "active" },
+        { id: "legacy", text: "LEGACY_CONFIRMED_MEMORY" },
+        { id: "inactive", text: "INACTIVE_MEMORY_MUST_NOT_ENTER_CONTEXT", status: "inactive" },
+        { id: "superseded", text: "RETIRED_MEMORY_MUST_NOT_ENTER_CONTEXT", status: "superseded" },
+      ],
+      memoryHistory: [{ text: "ARCHIVED_AUDIT_MUST_NOT_ENTER_CONTEXT" }],
+    }, sources: [{ ...input.sources[0], fetchedAt: "2026-01-01T00:00:00Z", reusedAt: "2026-10-02T00:00:00Z", reusedFrom: { runId: "saved-run", sourceId: "fixture" } }] });
+    const guardedCall = JSON.parse(await readFile(join(guarded.raw.recordPath.slice(0, -5), "call-1", "input.json"), "utf8"));
+    const guardedMessages = JSON.stringify(guardedCall.messages);
+    assert.ok(guardedMessages.includes("ACTIVE_VERIFIED_MEMORY"));
+    assert.ok(guardedMessages.includes("LEGACY_CONFIRMED_MEMORY"));
+    for (const marker of ["INACTIVE_MEMORY_MUST_NOT_ENTER_CONTEXT", "RETIRED_MEMORY_MUST_NOT_ENTER_CONTEXT", "ARCHIVED_AUDIT_MUST_NOT_ENTER_CONTEXT"])
+      assert.equal(guardedMessages.includes(marker), false, "Archived/inactive memory must not become model context");
+    assert.ok(JSON.stringify(guarded.raw.input).includes("ARCHIVED_AUDIT_MUST_NOT_ENTER_CONTEXT"), "Private audit still preserves supplied archived input");
+    assert.ok(guardedMessages.includes("2026-01-01T00:00:00Z"), "Saved source retains original capture date");
+    assert.ok(guardedMessages.includes("不是本次重新访问"), "Model is instructed not to claim reused snapshots were freshly fetched");
+    const beforeRevision = await runNanobot({ ...input, sessionId: "revision-isolation", project: { ...project, memoryRevision: 1, memory: [{ id: "m", text: "EPOCH_OLD_CURRENT_VALUE" }] } });
+    const afterRevision = await runNanobot({ ...input, sessionId: "revision-isolation", project: { ...project, memoryRevision: 2, memory: [{ id: "m", text: "EPOCH_NEW_CURRENT_VALUE" }] } });
+    assert.equal(afterRevision.raw.session.previousMessageCount, 0, "A memory revision must use a new upstream conversation epoch");
+    assert.notEqual(beforeRevision.raw.session.key, afterRevision.raw.session.key);
+    const afterRevisionCall = JSON.parse(await readFile(join(afterRevision.raw.recordPath.slice(0, -5), "call-1", "input.json"), "utf8"));
+    assert.equal(JSON.stringify(afterRevisionCall.messages).includes("EPOCH_OLD_CURRENT_VALUE"), false, "Old persisted session must not reintroduce a retired value");
+    const withinRevision = await runNanobot({ ...input, sessionId: "revision-isolation", project: { ...project, memoryRevision: 2, memory: [{ id: "m", text: "EPOCH_NEW_CURRENT_VALUE" }] } });
+    assert.ok(withinRevision.raw.session.previousMessageCount >= 2, "Conversation persists while approved memory revision is unchanged");
     const controller = new AbortController();
     let called = false;
     await assert.rejects(runNanobot({ ...input, sessionId: "cancel", prompt: "CANCEL_TEST", signal: controller.signal,

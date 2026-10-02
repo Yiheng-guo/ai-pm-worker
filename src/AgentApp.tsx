@@ -57,7 +57,25 @@ type Page =
   | "tasks"
   | "evaluation"
   | "settings";
-type Memory = { id: string; text: string; source?: string; updatedAt?: string };
+type Memory = {
+  id: string;
+  text: string;
+  source?: string;
+  updatedAt?: string;
+  revisionId?: string;
+  status?: "active";
+};
+type MemoryRevision = {
+  revisionId: string;
+  memoryId: string;
+  text: string;
+  source?: string;
+  operation:
+    "confirmed" | "corrected" | "deactivated" | "restored" | "imported";
+  at: string;
+  previousRevisionId?: string;
+  reason?: string;
+};
 type Project = {
   id: string;
   name: string;
@@ -65,6 +83,8 @@ type Project = {
   goal: string;
   constraints: string;
   memory: Memory[];
+  memoryRevision?: number;
+  memoryHistory?: MemoryRevision[];
   decisions: (string | { text?: string; title?: string; at?: string })[];
   createdAt: string;
   updatedAt: string;
@@ -73,10 +93,20 @@ type Source = {
   id: string;
   title: string;
   url: string;
-  text: string;
+  text?: string;
   sha256: string;
   fetchedAt: string;
   status: string;
+  preview?: string;
+  reusedFrom?: {
+    runId: string;
+    sourceId: string;
+    originalRunId?: string;
+    fetchedAt: string;
+    sha256: string;
+  };
+  reusedAt?: string;
+  ageAtReuseSeconds?: number;
 };
 type Requirement = {
   id: string;
@@ -89,6 +119,8 @@ type Action = {
   id: string;
   title: string;
   done: boolean;
+  dueDate?: string | null;
+  note?: string;
   sourceIds?: string[];
 };
 type Run = {
@@ -126,6 +158,8 @@ type Run = {
   error?: string;
   createdAt: string;
   completedAt?: string;
+  updatedAt?: string;
+  detailAvailable?: boolean;
 };
 type Evaluation = {
   id: string;
@@ -133,6 +167,7 @@ type Evaluation = {
   createdAt: string;
   status: string;
   sampleSize?: number;
+  caseCount?: number;
   cases?: {
     id: string;
     prompt: string;
@@ -150,6 +185,7 @@ type Evaluation = {
   }[];
   limitations?: string[];
   rawFiles?: string[];
+  detailAvailable?: boolean;
 };
 type Settings = {
   provider: string;
@@ -158,6 +194,7 @@ type Settings = {
   hasApiKey: boolean;
 };
 type Boot = {
+  compact?: boolean;
   projects: Project[];
   runs: Run[];
   evaluations: Evaluation[];
@@ -230,6 +267,30 @@ function date(value?: string, short = false) {
         timeZone: "Asia/Shanghai",
       })
     : "—";
+}
+function age(value?: string) {
+  if (!value || !Number.isFinite(Date.parse(value))) return "时间未记录";
+  const hours = Math.max(
+    0,
+    Math.floor((Date.now() - Date.parse(value)) / 3600000),
+  );
+  return hours < 1
+    ? "不到 1 小时前"
+    : hours < 24
+      ? `${hours} 小时前`
+      : `${Math.floor(hours / 24)} 天前`;
+}
+function runFingerprint(run?: Run) {
+  if (!run) return "";
+  return JSON.stringify([
+    run.status,
+    run.updatedAt,
+    run.completedAt,
+    run.stage,
+    run.events?.length,
+    run.result?.actions,
+    run.sources?.map((s) => [s.id, s.sha256, s.status]),
+  ]);
 }
 function metric(value: unknown) {
   if (value == null) return "未测量";
@@ -336,6 +397,24 @@ export default function AgentApp() {
     [taskFilter, setTaskFilter] = useState("open"),
     [prototypeTab, setPrototypeTab] = useState("preview"),
     [evalId, setEvalId] = useState("");
+  const [selectedSourceIds, setSelectedSourceIds] = useState<string[]>([]);
+  const [runDetails, setRunDetails] = useState<
+    Record<string, { fingerprint: string; run: Run }>
+  >({});
+  const [evaluationDetails, setEvaluationDetails] = useState<
+    Record<string, { fingerprint: string; report: Evaluation }>
+  >({});
+  const [detailState, setDetailState] = useState({
+    id: "",
+    loading: false,
+    error: "",
+  });
+  const [evaluationState, setEvaluationState] = useState({
+    id: "",
+    loading: false,
+    error: "",
+  });
+  const [detailReload, setDetailReload] = useState(0);
   const composer = useRef<HTMLTextAreaElement>(null),
     contentRef = useRef<HTMLElement>(null);
   async function api(path: string, options: RequestInit = {}) {
@@ -348,7 +427,9 @@ export default function AgentApp() {
       .catch(() => ({ error: `服务返回异常（${response.status}）` }));
     if (!response.ok) {
       if (response.status === 401 || response.status === 403) setLocked(true);
-      throw new Error(data.error || "请求失败，请稍后重试");
+      throw Object.assign(new Error(data.error || "请求失败，请稍后重试"), {
+        status: response.status,
+      });
     }
     return data;
   }
@@ -435,6 +516,10 @@ export default function AgentApp() {
     return () => clearTimeout(timer);
   }, [toast]);
   useEffect(() => {
+    setSelectedSourceIds([]);
+    setSourceUrls("");
+  }, [projectId]);
+  useEffect(() => {
     const close = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         setProjectModal(null);
@@ -451,8 +536,13 @@ export default function AgentApp() {
     () =>
       (boot?.runs || [])
         .filter((r) => r.projectId === project?.id)
+        .map((r) =>
+          runDetails[r.id]?.fingerprint === runFingerprint(r)
+            ? runDetails[r.id].run
+            : r,
+        )
         .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
-    [boot?.runs, project?.id],
+    [boot?.runs, project?.id, runDetails],
   );
   const selectedRun =
     runId === "new"
@@ -485,8 +575,104 @@ export default function AgentApp() {
   const selectedPrototype =
     prototypes.find((r) => r.id === runId) || prototypes[0];
   const selectedSource = sources.find((s) => s.key === sourceKey) || sources[0];
-  const evaluation =
+  const evaluationSummary =
     boot?.evaluations.find((e) => e.id === evalId) || boot?.evaluations[0];
+  const evaluationFingerprint = evaluationSummary
+    ? JSON.stringify([
+        evaluationSummary.status,
+        evaluationSummary.metrics,
+        evaluationSummary.caseCount,
+        evaluationSummary.sampleSize,
+        evaluationSummary.limitations,
+      ])
+    : "";
+  const evaluation =
+    evaluationSummary &&
+    (evaluationDetails[evaluationSummary.id]?.fingerprint ===
+    evaluationFingerprint
+      ? evaluationDetails[evaluationSummary.id].report
+      : evaluationSummary);
+  const reusableSources = Array.from(
+    new Map(
+      sources
+        .filter((s) => s.status !== "failed" && !!s.sha256)
+        .map((s) => [s.id, s]),
+    ).values(),
+  );
+  const detailRunId =
+    page === "research"
+      ? selectedRun?.id
+      : page === "evidence"
+        ? selectedSource?.runId
+        : page === "prototypes"
+          ? selectedPrototype?.id
+          : undefined;
+  const detailSummary = boot?.runs.find((r) => r.id === detailRunId);
+  const detailFingerprint = runFingerprint(detailSummary);
+  useEffect(() => {
+    if (!detailRunId || !boot?.compact) {
+      setDetailState({ id: "", loading: false, error: "" });
+      return;
+    }
+    const id = detailRunId;
+    if (runDetails[id]?.fingerprint === detailFingerprint) {
+      setDetailState({ id, loading: false, error: "" });
+      return;
+    }
+    const controller = new AbortController();
+    setDetailState({ id, loading: true, error: "" });
+    void api(`/agent/runs/${id}`, { signal: controller.signal })
+      .then((run: Run) => {
+        if (controller.signal.aborted) return;
+        setRunDetails((cache) => ({
+          ...cache,
+          [id]: { fingerprint: detailFingerprint, run },
+        }));
+        setDetailState({ id, loading: false, error: "" });
+      })
+      .catch((e) => {
+        if (!controller.signal.aborted)
+          setDetailState({ id, loading: false, error: (e as Error).message });
+      });
+    return () => controller.abort();
+  }, [detailRunId, detailFingerprint, boot?.compact, detailReload]);
+  useEffect(() => {
+    if (
+      page !== "evaluation" ||
+      !evaluationSummary ||
+      !boot?.compact ||
+      evaluationDetails[evaluationSummary.id]?.fingerprint ===
+        evaluationFingerprint
+    )
+      return;
+    const id = evaluationSummary.id;
+    const controller = new AbortController();
+    setEvaluationState({ id, loading: true, error: "" });
+    void api(`/agent/evaluations/${id}`, { signal: controller.signal })
+      .then((report: Evaluation) => {
+        if (controller.signal.aborted) return;
+        setEvaluationDetails((cache) => ({
+          ...cache,
+          [id]: { fingerprint: evaluationFingerprint, report },
+        }));
+        setEvaluationState({ id, loading: false, error: "" });
+      })
+      .catch((e) => {
+        if (!controller.signal.aborted)
+          setEvaluationState({
+            id,
+            loading: false,
+            error: (e as Error).message,
+          });
+      });
+    return () => controller.abort();
+  }, [
+    page,
+    evaluationSummary?.id,
+    evaluationFingerprint,
+    boot?.compact,
+    detailReload,
+  ]);
   const activeRuns = runs.filter(isBusy),
     completeRuns = runs.filter((r) => r.status === "completed");
   const modelReady =
@@ -504,10 +690,14 @@ export default function AgentApp() {
     setSourceKey("");
     setProjectMenu(false);
     setSessionId(crypto.randomUUID());
+    setSelectedSourceIds([]);
+    setSourceUrls("");
   }
   function seed(text: string, recall = false) {
     setPrompt(text);
     setRunId("new");
+    setSelectedSourceIds([]);
+    setSourceUrls("");
     navigate("research");
     if (recall) setShowSources(false);
     setTimeout(() => composer.current?.focus(), 100);
@@ -540,12 +730,18 @@ export default function AgentApp() {
       setToast("请至少输入 5 个字符，描述你的研究目标");
       return;
     }
-    const urls = sourceUrls
+    const urls = (kind === "research" ? sourceUrls : "")
       .split(/\n|,|，/)
       .map((v) => v.trim())
       .filter(Boolean);
-    if (urls.length > 4) {
-      setToast("每次研究最多指定 4 个参考来源，请保留最重要的链接");
+    const existing =
+      kind === "research"
+        ? selectedSourceIds.filter((id) =>
+            reusableSources.some((s) => s.id === id),
+          )
+        : [];
+    if (kind === "research" && urls.length + existing.length > 4) {
+      setToast("新链接与已存证据合计最多 4 条，请保留最重要的来源");
       return;
     }
     if (
@@ -580,6 +776,7 @@ export default function AgentApp() {
             kind,
             sessionId,
             sourceUrls: urls,
+            sourceIds: existing,
           }),
         },
       );
@@ -589,6 +786,7 @@ export default function AgentApp() {
       setRunId(run.id);
       setPrompt("");
       setSourceUrls("");
+      setSelectedSourceIds([]);
       setSessionId(run.sessionId || sessionId);
       navigate("research");
     } catch (e) {
@@ -633,6 +831,33 @@ export default function AgentApp() {
       setError((e as Error).message);
     }
   }
+  async function saveAction(
+    action: Action & { run: Run },
+    update: { note: string; dueDate: string | null },
+  ) {
+    await api(`/agent/runs/${action.run.id}/actions/${action.id}`, {
+      method: "PATCH",
+      body: JSON.stringify(update),
+    });
+    await refresh();
+    setToast("跟进日期与记录已保存");
+  }
+  function followUp(action: Action & { run: Run }) {
+    seed(
+      `跟进待办「${action.title}」。\n${action.note ? `已有进展：${action.note}\n` : ""}请结合项目当前背景和已有证据，判断这项行动的验证价值、缺失信息与下一步。旧证据代表抓取时的内容，涉及最新变化时请明确核实。`,
+    );
+    const ids = (
+      action.sourceIds?.length
+        ? action.sourceIds
+        : action.run.sources.map((s) => s.id)
+    )
+      .filter((id) => reusableSources.some((s) => s.id === id))
+      .slice(0, 4);
+    setSelectedSourceIds(ids);
+    setShowSources(ids.length > 0);
+    setSessionId(crypto.randomUUID());
+    setToast("已填入跟进问题和关联证据，确认后再开始研究");
+  }
   async function confirmMemory(
     run: Run,
     item: { text: string; sourceIds: string[] },
@@ -654,27 +879,23 @@ export default function AgentApp() {
     }
     setSavingMemory(`${run.id}:${index}`);
     try {
-      await api(`/agent/projects/${project.id}`, {
-        method: "PATCH",
+      await api(`/agent/projects/${project.id}/memory`, {
+        method: "POST",
         body: JSON.stringify({
-          memory: [
-            ...project.memory,
-            {
-              id: crypto.randomUUID(),
-              text: item.text.trim(),
-              source:
-                `用户确认 · 研究 ${run.id} · 证据 ${(item.sourceIds || []).join(", ")}`.slice(
-                  0,
-                  300,
-                ),
-              updatedAt: new Date().toISOString(),
-            },
-          ],
+          text: item.text.trim(),
+          source:
+            `用户确认 · 研究 ${run.id} · 证据 ${(item.sourceIds || []).join(", ")}`.slice(
+              0,
+              300,
+            ),
+          confirm: true,
+          expectedRevision: project.memoryRevision ?? 0,
         }),
       });
       await refresh();
       setToast("已确认并保存到项目记忆，下一次研究会读取这条信息");
     } catch (e) {
+      await refresh();
       setError((e as Error).message);
     } finally {
       setSavingMemory("");
@@ -755,6 +976,32 @@ export default function AgentApp() {
           <p>{description}</p>
         </div>
         {action}
+      </div>
+    );
+  }
+  function detailNotice(state = detailState) {
+    if (!state.loading && !state.error) return null;
+    return (
+      <div
+        className={`ag-detail-notice ${state.error ? "error" : ""}`}
+        role="status"
+      >
+        {state.loading ? (
+          <Loader2 size={15} className="ag-spin" />
+        ) : (
+          <AlertCircle size={15} />
+        )}
+        <span>
+          {state.loading
+            ? "正在读取完整记录…"
+            : `完整记录暂未载入：${state.error}`}
+        </span>
+        {state.error && (
+          <button type="button" onClick={() => setDetailReload((v) => v + 1)}>
+            重新读取
+            <RefreshCw size={12} />
+          </button>
+        )}
       </div>
     );
   }
@@ -847,7 +1094,7 @@ export default function AgentApp() {
             <b>亦伴</b>
             <small>PERSONAL PRODUCT AGENT</small>
           </span>
-          <span className="ag-brand-version">01</span>
+          <span className="ag-brand-version">02</span>
         </a>
         <div className="ag-project-select">
           <button
@@ -1355,10 +1602,11 @@ export default function AgentApp() {
                         <div className="ag-run-picker">
                           <History size={14} />
                           <select
-                            value={selectedRun?.id || ""}
+                            value={selectedRun?.id || "new"}
                             onChange={(e) => setRunId(e.target.value)}
                             aria-label="选择研究记录"
                           >
+                            <option value="new">新的研究问题 · 尚未提交</option>
                             {runs
                               .filter((r) => r.kind !== "prototype")
                               .map((r) => (
@@ -1371,6 +1619,7 @@ export default function AgentApp() {
                         </div>
                       )}
                       <div className="ag-conversation">
+                        {detailNotice()}
                         {selectedRun ? (
                           <>
                             <div className="ag-user-message">
@@ -1525,6 +1774,8 @@ export default function AgentApp() {
                                   </div>
                                 )}
                                 {selectedRun.status === "completed" &&
+                                  !detailState.loading &&
+                                  !detailState.error &&
                                   !selectedRun.result?.answer && (
                                     <p className="ag-muted">
                                       任务完成，尚未返回研究正文。可查看原始记录。
@@ -1615,17 +1866,73 @@ export default function AgentApp() {
                           }}
                         />
                         {showSources && (
-                          <label className="ag-url-input">
-                            <span>
-                              指定参考来源（选填，最多 4 条，每行一个 URL）
-                            </span>
-                            <textarea
-                              rows={2}
-                              placeholder="https://github.com/…"
-                              value={sourceUrls}
-                              onChange={(e) => setSourceUrls(e.target.value)}
-                            />
-                          </label>
+                          <div className="ag-source-composer">
+                            <label className="ag-url-input">
+                              <span>新抓取来源（与已有证据合计最多 4 条）</span>
+                              <textarea
+                                rows={2}
+                                placeholder="https://github.com/…"
+                                value={sourceUrls}
+                                onChange={(e) => setSourceUrls(e.target.value)}
+                              />
+                            </label>
+                            {!!reusableSources.length && (
+                              <div className="ag-reuse-picker">
+                                <div className="ag-side-heading">
+                                  <h4>复用项目证据</h4>
+                                  <span>{selectedSourceIds.length} 已选</span>
+                                </div>
+                                <p>
+                                  读取已存原文，不会重新访问网页。抓取时间可能影响结论，请明确哪些信息需要重新核实。
+                                </p>
+                                <div className="ag-reuse-list">
+                                  {reusableSources.map((s) => (
+                                    <label
+                                      key={s.id}
+                                      className={
+                                        selectedSourceIds.includes(s.id)
+                                          ? "selected"
+                                          : ""
+                                      }
+                                    >
+                                      <input
+                                        type="checkbox"
+                                        checked={selectedSourceIds.includes(
+                                          s.id,
+                                        )}
+                                        onChange={(e) => {
+                                          if (
+                                            e.target.checked &&
+                                            selectedSourceIds.length >= 4
+                                          ) {
+                                            setToast("每次最多选择 4 条证据");
+                                            return;
+                                          }
+                                          setSelectedSourceIds((ids) =>
+                                            e.target.checked
+                                              ? [...ids, s.id]
+                                              : ids.filter((id) => id !== s.id),
+                                          );
+                                        }}
+                                      />
+                                      <span>
+                                        <b>{s.title || s.url}</b>
+                                        <small>
+                                          抓取 {date(s.fetchedAt)} ·{" "}
+                                          {age(s.fetchedAt)} · {domain(s.url)}
+                                        </small>
+                                        <small>
+                                          SHA256 {s.sha256.slice(0, 12)} ·
+                                          来自研究 {s.runId.slice(0, 8)}
+                                          {s.reusedFrom ? " · 曾被复用" : ""}
+                                        </small>
+                                      </span>
+                                    </label>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                          </div>
                         )}
                         <div className="ag-composer-bottom">
                           <div>
@@ -1635,8 +1942,9 @@ export default function AgentApp() {
                               onClick={() => setShowSources(!showSources)}
                             >
                               <Link2 size={15} />
-                              添加来源
-                              {sourceUrls.trim() && (
+                              选择来源
+                              {(sourceUrls.trim() ||
+                                selectedSourceIds.length > 0) && (
                                 <span className="ag-small-dot" />
                               )}
                             </button>
@@ -1772,7 +2080,10 @@ export default function AgentApp() {
                             <b>{s.title || s.url}</b>
                             <p>
                               {s.text?.slice(0, 130) ||
-                                "没有抓取到原文，请检查来源与执行记录。"}
+                                s.preview ||
+                                (s.status === "failed"
+                                  ? "来源读取失败，查看执行记录了解原因。"
+                                  : "已存原文，点击读取完整证据。")}
                             </p>
                             <small>
                               {date(s.fetchedAt)}
@@ -1815,6 +2126,30 @@ export default function AgentApp() {
                               {selectedSource.sha256?.slice(0, 12) || "未记录"}
                             </span>
                           </div>
+                          <div className="ag-source-provenance">
+                            <History size={15} />
+                            <div>
+                              <b>
+                                {selectedSource.reusedFrom
+                                  ? "复用的历史证据"
+                                  : "已保存的网页快照"}
+                              </b>
+                              <p>
+                                抓取距今 {age(selectedSource.fetchedAt)}
+                                。保存的内容代表当时页面，不等于当前页面已重新验证。
+                              </p>
+                              {selectedSource.reusedFrom && (
+                                <p>
+                                  原始研究{" "}
+                                  {selectedSource.reusedFrom.originalRunId ||
+                                    selectedSource.reusedFrom.runId}{" "}
+                                  · 复用于 {date(selectedSource.reusedAt)} ·
+                                  摘要保留不变
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                          {detailNotice()}
                           {selectedSource.status === "failed" && (
                             <div className="ag-inline-error">
                               <AlertCircle size={17} />
@@ -1825,7 +2160,11 @@ export default function AgentApp() {
                           )}
                           <div className="ag-original-text">
                             {selectedSource.text ||
-                              "此来源没有可供查看的原文。"}
+                              (detailState.loading
+                                ? "原文正在载入…"
+                                : detailState.error
+                                  ? "完整证据尚未读取，请重试。"
+                                  : "此来源没有可供查看的原文。")}
                           </div>
                         </section>
                       )}
@@ -2045,7 +2384,17 @@ export default function AgentApp() {
                           隔离预览
                         </span>
                       </div>
-                      {prototypeTab === "preview" ? (
+                      {detailNotice()}
+                      {!selectedPrototype.prototype.code ? (
+                        <div className="ag-prototype-loading">
+                          <Box size={25} />
+                          <p>
+                            {detailState.error
+                              ? "原型内容读取失败，请重试。"
+                              : "正在读取这个版本的完整原型…"}
+                          </p>
+                        </div>
+                      ) : prototypeTab === "preview" ? (
                         <div className="ag-preview-frame">
                           <div className="ag-preview-browser">
                             <span />
@@ -2154,7 +2503,7 @@ export default function AgentApp() {
                   {pageHeading(
                     "KEEP THE WORK MOVING",
                     "跟进待办",
-                    "让研究结论变成下一步行动。勾选完成状态，保留任务与证据的关联。",
+                    "记录进展与跟进日期，让待办回到下一次研究。",
                   )}
                   <div className="ag-task-summary">
                     <div>
@@ -2171,7 +2520,7 @@ export default function AgentApp() {
                     </div>
                     <p>
                       <Clock3 size={15} />
-                      待办状态保存在项目里。定时自动执行需另行配置。
+                      日期用于整理跟进顺序。此版本不会自动提醒或执行。
                     </p>
                   </div>
                   <div className="ag-filter-tabs">
@@ -2201,39 +2550,21 @@ export default function AgentApp() {
                             taskFilter === "all" ||
                             (taskFilter === "done" ? a.done : !a.done),
                         )
+                        .sort((a, b) =>
+                          (a.dueDate || "9999-12-31").localeCompare(
+                            b.dueDate || "9999-12-31",
+                          ),
+                        )
                         .map((a) => (
-                          <article
+                          <TaskCard
                             key={`${a.run.id}-${a.id}`}
-                            className={a.done ? "done" : ""}
-                          >
-                            <button
-                              className="ag-checkbox"
-                              aria-label={
-                                a.done
-                                  ? `将 ${a.title} 标记为未完成`
-                                  : `完成 ${a.title}`
-                              }
-                              aria-pressed={a.done}
-                              onClick={() => void toggleAction(a)}
-                            >
-                              {a.done && <Check size={13} />}
-                            </button>
-                            <div>
-                              <h3>{a.title}</h3>
-                              {sourceChips(a.sourceIds, a.run)}
-                              <small>
-                                来自 {kindLabels[a.run.kind]} ·{" "}
-                                {date(a.run.createdAt)}
-                              </small>
-                            </div>
-                            <button
-                              className="ag-text-button"
-                              onClick={() => navigate("research", a.run.id)}
-                            >
-                              相关研究
-                              <ArrowUpRight size={13} />
-                            </button>
-                          </article>
+                            action={a}
+                            sources={sourceChips(a.sourceIds, a.run)}
+                            onToggle={() => toggleAction(a)}
+                            onSave={(data) => saveAction(a, data)}
+                            onResearch={() => navigate("research", a.run.id)}
+                            onFollowUp={() => followUp(a)}
+                          />
                         ))}
                     </div>
                   ) : (
@@ -2277,6 +2608,14 @@ export default function AgentApp() {
                   )}
                   {evaluation ? (
                     <>
+                      <div className="ag-note ag-evaluation-version">
+                        <History size={15} />
+                        <span>
+                          {evaluation.id === "paired-2026-10-02"
+                            ? "第一版历史实测 · 2026-10-02。以下成绩属于第一版；本轮改动尚未进行新的配对评测。"
+                            : "按报告所记录的版本与样本解读结果，不能直接代表当前版本的效果。"}
+                        </span>
+                      </div>
                       <div className="ag-evaluation-intro">
                         <div>
                           <span className="ag-eval-badge">
@@ -2290,6 +2629,7 @@ export default function AgentApp() {
                             {date(evaluation.createdAt)} ·{" "}
                             {evaluation.sampleSize ??
                               evaluation.cases?.length ??
+                              evaluation.caseCount ??
                               0}{" "}
                             个测试案例 · 单次结果不能代表长期稳定性
                           </p>
@@ -2375,8 +2715,19 @@ export default function AgentApp() {
                           <h2>
                             测试案例与原始结果<span>RAW RECORDS</span>
                           </h2>
-                          <span>{evaluation.cases?.length || 0} 个案例</span>
+                          <span>
+                            {evaluation.cases?.length ??
+                              evaluation.caseCount ??
+                              evaluation.sampleSize ??
+                              "—"}{" "}
+                            个案例
+                          </span>
                         </div>
+                        {detailNotice(
+                          evaluationState.id === evaluation.id
+                            ? evaluationState
+                            : { id: "", loading: false, error: "" },
+                        )}
                         {evaluation.cases?.map((c, i) => (
                           <details key={c.id}>
                             <summary>
@@ -2529,6 +2880,8 @@ export default function AgentApp() {
         <ProjectModal
           mode={projectModal}
           project={project}
+          request={api}
+          onMemoryChanged={refresh}
           onClose={() => setProjectModal(null)}
           onSave={async (data) => {
             const p: Project = await api(
@@ -2542,6 +2895,11 @@ export default function AgentApp() {
             );
             await refresh();
             setProjectId(p.id);
+            if (projectModal === "new") {
+              setRunId("");
+              setSourceKey("");
+              setSessionId(crypto.randomUUID());
+            }
             setProjectModal(null);
             setToast(
               projectModal === "new"
@@ -2555,16 +2913,639 @@ export default function AgentApp() {
   );
 }
 
+function TaskCard({
+  action,
+  sources,
+  onToggle,
+  onSave,
+  onResearch,
+  onFollowUp,
+}: {
+  action: Action & { run: Run };
+  sources: React.ReactNode;
+  onToggle: () => Promise<void>;
+  onSave: (data: { note: string; dueDate: string | null }) => Promise<void>;
+  onResearch: () => void;
+  onFollowUp: () => void;
+}) {
+  const dateInput = useRef<HTMLInputElement>(null);
+  const [editing, setEditing] = useState(false),
+    [note, setNote] = useState(action.note || ""),
+    [dueDate, setDueDate] = useState(action.dueDate || ""),
+    [saving, setSaving] = useState(false),
+    [error, setError] = useState("");
+  const overdue =
+    !action.done &&
+    !!action.dueDate &&
+    action.dueDate <
+      new Date().toLocaleDateString("sv-SE", { timeZone: "Asia/Shanghai" });
+  async function save() {
+    setSaving(true);
+    setError("");
+    try {
+      await onSave({
+        note: note.trim(),
+        dueDate: dateInput.current?.value || null,
+      });
+      setEditing(false);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  }
+  return (
+    <article className={`ag-task-card ${action.done ? "done" : ""}`}>
+      <button
+        className="ag-checkbox"
+        disabled={saving}
+        aria-label={
+          action.done
+            ? `将 ${action.title} 标记为未完成`
+            : `完成 ${action.title}`
+        }
+        aria-pressed={action.done}
+        onClick={() => void onToggle()}
+      >
+        {action.done && <Check size={13} />}
+      </button>
+      <div className="ag-task-body">
+        <h3>{action.title}</h3>
+        {sources}
+        <div className="ag-task-metadata">
+          <small>
+            来自 {kindLabels[action.run.kind]} · {date(action.run.createdAt)}
+          </small>
+          {action.dueDate && (
+            <span className={overdue ? "overdue" : ""}>
+              <Clock3 size={12} />
+              {overdue ? "已过跟进日期 · " : "跟进 "}
+              {action.dueDate}
+            </span>
+          )}
+        </div>
+        {!!action.note && !editing && (
+          <p className="ag-task-note">{action.note}</p>
+        )}
+        <div className="ag-task-tools">
+          <button
+            className="ag-text-button"
+            onClick={() => {
+              setNote(action.note || "");
+              setDueDate(action.dueDate || "");
+              setError("");
+              setEditing(!editing);
+            }}
+            disabled={saving}
+          >
+            <Pencil size={12} />
+            {editing ? "收起编辑" : "日期与进展"}
+          </button>
+          <button className="ag-text-button" onClick={onResearch}>
+            研究依据
+            <ArrowUpRight size={12} />
+          </button>
+          <button className="ag-text-button" onClick={onFollowUp}>
+            <MessageSquare size={12} />
+            继续研究
+            <ArrowRight size={12} />
+          </button>
+        </div>
+        {editing && (
+          <div className="ag-task-editor">
+            <label>
+              跟进日期
+              <input
+                ref={dateInput}
+                type="date"
+                value={dueDate}
+                onChange={(e) => setDueDate(e.target.value)}
+                onBlur={(e) => setDueDate(e.currentTarget.value)}
+                disabled={saving}
+              />
+            </label>
+            <label>
+              进展与补充信息
+              <textarea
+                value={note}
+                onChange={(e) => setNote(e.target.value)}
+                placeholder="记录已做的验证、发现和下一步…"
+                rows={3}
+                maxLength={4000}
+                disabled={saving}
+              />
+            </label>
+            <div className="ag-task-editor-bottom">
+              <small>手动记录日期，不会自动提醒或调用模型。</small>
+              <button
+                type="button"
+                className="ag-button light small"
+                onClick={() => setEditing(false)}
+                disabled={saving}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                className="ag-button primary small"
+                disabled={saving}
+                onClick={() => void save()}
+              >
+                {saving ? (
+                  <Loader2 size={13} className="ag-spin" />
+                ) : (
+                  <Check size={13} />
+                )}
+                保存跟进
+              </button>
+            </div>
+            {error && (
+              <p className="ag-field-error" role="alert">
+                {error}
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+    </article>
+  );
+}
+
+function MemoryManager({
+  project,
+  request,
+  onChanged,
+}: {
+  project: Project;
+  request: (path: string, options?: RequestInit) => Promise<unknown>;
+  onChanged: () => Promise<void>;
+}) {
+  type MemoryData = {
+    memory: Memory[];
+    history: MemoryRevision[];
+    revision: number;
+  };
+  type Draft = {
+    operation: "add" | "correct" | "deactivate" | "restore";
+    memoryId?: string;
+    revisionId?: string;
+    text: string;
+    original?: string;
+    reason: string;
+    expectedRevision: number;
+    confirmed: boolean;
+    conflict?: boolean;
+  };
+  const [data, setData] = useState<MemoryData>({
+    memory: project.memory,
+    history: project.memoryHistory || [],
+    revision: project.memoryRevision ?? 0,
+  });
+  const [view, setView] = useState("current"),
+    [draft, setDraft] = useState<Draft | null>(null),
+    [loading, setLoading] = useState(true),
+    [saving, setSaving] = useState(false),
+    [error, setError] = useState(""),
+    [notice, setNotice] = useState("");
+  const base = `/agent/projects/${project.id}/memory`;
+  async function load(signal?: AbortSignal) {
+    const latest = (await request(base, { signal })) as MemoryData;
+    if (!signal?.aborted) setData(latest);
+    return latest;
+  }
+  useEffect(() => {
+    const controller = new AbortController();
+    void load(controller.signal)
+      .catch((e) => {
+        if (!controller.signal.aborted) setError((e as Error).message);
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false);
+      });
+    return () => controller.abort();
+  }, [project.id]);
+  const operationLabels = {
+    confirmed: "用户确认",
+    corrected: "用户更正",
+    deactivated: "停用",
+    restored: "恢复版本",
+    imported: "原有记忆导入",
+  };
+  const inactiveIds = [...new Set(data.history.map((h) => h.memoryId))].filter(
+    (id) => !data.memory.some((m) => m.id === id),
+  );
+  const history = [...data.history].sort((a, b) => b.at.localeCompare(a.at));
+  const shownHistory =
+    view === "inactive"
+      ? history.filter((h) => inactiveIds.includes(h.memoryId))
+      : history;
+  function start(
+    next: Omit<Draft, "reason" | "expectedRevision" | "confirmed">,
+  ) {
+    setDraft({
+      ...next,
+      reason: "",
+      expectedRevision: data.revision,
+      confirmed: false,
+    });
+    setError("");
+    setNotice("");
+  }
+  async function save() {
+    if (!draft || !draft.confirmed || draft.conflict) return;
+    setSaving(true);
+    setError("");
+    const body = {
+      text: draft.text.trim(),
+      source: "用户确认",
+      reason: draft.reason.trim(),
+      expectedRevision: draft.expectedRevision,
+      confirm: true,
+    };
+    try {
+      if (draft.operation === "add")
+        await request(base, { method: "POST", body: JSON.stringify(body) });
+      else if (draft.operation === "restore")
+        await request(`${base}/${draft.memoryId}/restore`, {
+          method: "POST",
+          body: JSON.stringify({
+            revisionId: draft.revisionId,
+            reason: body.reason,
+            confirm: true,
+            expectedRevision: body.expectedRevision,
+          }),
+        });
+      else
+        await request(`${base}/${draft.memoryId}`, {
+          method: "PATCH",
+          body: JSON.stringify(
+            draft.operation === "deactivate"
+              ? {
+                  active: false,
+                  reason: body.reason,
+                  confirm: true,
+                  expectedRevision: body.expectedRevision,
+                }
+              : body,
+          ),
+        });
+      await load();
+      await onChanged();
+      setDraft(null);
+      setNotice("已保存。后续研究只会读取当前启用的版本。");
+    } catch (e) {
+      const failure = e as Error & { status?: number };
+      if (failure.status === 409) {
+        const latest = await load().catch(() => undefined);
+        const changed = !!latest && latest.revision !== draft.expectedRevision;
+        setDraft((current) =>
+          current
+            ? { ...current, confirmed: false, conflict: changed }
+            : current,
+        );
+        setError(
+          changed
+            ? "项目记忆已在其他位置更新。你的草稿已保留，请重新核对当前版本再确认，系统没有覆盖它。"
+            : `${failure.message} 草稿已保留，请稍后重新确认。`,
+        );
+      } else setError(failure.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+  return (
+    <div className="ag-memory-manager">
+      <div className="ag-note">
+        <Brain size={15} />
+        <span>
+          只有当前启用的记忆参与研究。更正与停用保留历史；恢复旧版本需要再次确认。
+        </span>
+      </div>
+      <div className="ag-memory-toolbar">
+        <div className="ag-filter-tabs">
+          {[
+            { id: "current", text: `当前 ${data.memory.length}` },
+            { id: "history", text: `版本历史 ${data.history.length}` },
+            { id: "inactive", text: `已停用 ${inactiveIds.length}` },
+          ].map((item) => (
+            <button
+              type="button"
+              key={item.id}
+              className={view === item.id ? "active" : ""}
+              onClick={() => setView(item.id)}
+            >
+              {item.text}
+            </button>
+          ))}
+        </div>
+        <button
+          className="ag-button light small"
+          type="button"
+          disabled={loading || saving || !!draft || data.memory.length >= 30}
+          onClick={() => start({ operation: "add", text: "" })}
+        >
+          <Plus size={13} />
+          添加记忆
+        </button>
+      </div>
+      {loading && (
+        <div className="ag-detail-notice">
+          <Loader2 size={14} className="ag-spin" />
+          正在读取记忆版本…
+        </div>
+      )}
+      {notice && (
+        <p className="ag-memory-notice" role="status">
+          <CheckCircle2 size={14} />
+          {notice}
+        </p>
+      )}
+      {draft && (
+        <section className="ag-memory-review" aria-label="确认记忆变更">
+          <div className="ag-memory-review-title">
+            <ShieldCheck size={16} />
+            <h3>
+              {draft.operation === "restore"
+                ? "恢复前，请核对这个版本"
+                : draft.operation === "deactivate"
+                  ? "确认停用这条记忆"
+                  : draft.operation === "correct"
+                    ? "核对记忆更正"
+                    : "确认新项目记忆"}
+            </h3>
+          </div>
+          {draft.original && (
+            <div className="ag-memory-before">
+              <small>变更前 / 当前启用值</small>
+              <p>{draft.original}</p>
+            </div>
+          )}
+          {draft.operation === "add" || draft.operation === "correct" ? (
+            <label>
+              确认后的内容
+              <textarea
+                rows={3}
+                maxLength={2000}
+                value={draft.text}
+                disabled={saving}
+                onChange={(e) =>
+                  setDraft({ ...draft, text: e.target.value, confirmed: false })
+                }
+              />
+            </label>
+          ) : (
+            <div className="ag-memory-before">
+              <small>
+                {draft.operation === "restore"
+                  ? "将恢复为当前值"
+                  : "停用后不再参与新研究"}
+              </small>
+              <p>{draft.text}</p>
+            </div>
+          )}
+          <label>
+            变更说明（选填）
+            <input
+              maxLength={500}
+              value={draft.reason}
+              disabled={saving}
+              onChange={(e) => setDraft({ ...draft, reason: e.target.value })}
+              placeholder="例如：核实后人数已变更 / 旧方向暂不适用"
+            />
+          </label>
+          <label className="ag-confirm-checkbox">
+            <input
+              type="checkbox"
+              checked={draft.confirmed}
+              disabled={saving || draft.conflict}
+              onChange={(e) =>
+                setDraft({ ...draft, confirmed: e.target.checked })
+              }
+            />
+            <span>
+              {draft.operation === "restore"
+                ? "我已核对，确认这个历史版本仍适用，并将它设为当前记忆。"
+                : draft.operation === "deactivate"
+                  ? "我确认停用，后续研究不再使用这条记忆。"
+                  : "我已核对内容，确认它可以作为项目记忆使用。"}
+            </span>
+          </label>
+          {draft.conflict && (
+            <button
+              type="button"
+              className="ag-button light small"
+              disabled={saving}
+              onClick={() =>
+                setDraft({
+                  ...draft,
+                  expectedRevision: data.revision,
+                  original: data.memory.find((m) => m.id === draft.memoryId)
+                    ?.text,
+                  confirmed: false,
+                  conflict: false,
+                })
+              }
+            >
+              采用最新版本重新核对
+              <RefreshCw size={13} />
+            </button>
+          )}
+          <div className="ag-memory-review-actions">
+            <small>当前记忆修订 {data.revision} · 不调用模型</small>
+            <button
+              type="button"
+              className="ag-button light small"
+              disabled={saving}
+              onClick={() => {
+                setDraft(null);
+                setError("");
+              }}
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              className="ag-button primary small"
+              disabled={
+                saving ||
+                !draft.confirmed ||
+                draft.conflict ||
+                !draft.text.trim()
+              }
+              onClick={() => void save()}
+            >
+              {saving ? (
+                <Loader2 size={13} className="ag-spin" />
+              ) : (
+                <Check size={13} />
+              )}
+              {draft.operation === "restore"
+                ? "确认恢复为当前记忆"
+                : draft.operation === "deactivate"
+                  ? "确认停用"
+                  : "确认并保存"}
+            </button>
+          </div>
+        </section>
+      )}
+      {error && (
+        <div className="ag-error" role="alert">
+          <AlertCircle size={15} />
+          <span>{error}</span>
+          {!draft && (
+            <button
+              type="button"
+              onClick={() => {
+                setLoading(true);
+                void load()
+                  .then(() => setError(""))
+                  .catch((e) => setError((e as Error).message))
+                  .finally(() => setLoading(false));
+              }}
+            >
+              重试
+            </button>
+          )}
+        </div>
+      )}
+      {view === "current" ? (
+        <div className="ag-current-memories">
+          {data.memory.length ? (
+            data.memory.map((m) => (
+              <article key={m.id}>
+                <div>
+                  <span className="ag-memory-active">
+                    <CheckCircle2 size={12} />
+                    当前启用
+                  </span>
+                  <small>
+                    {date(m.updatedAt)} · {m.source || "用户记忆"}
+                  </small>
+                </div>
+                <p>{m.text}</p>
+                <div className="ag-memory-row-actions">
+                  <small title={m.revisionId}>
+                    版本 {m.revisionId?.slice(0, 8) || "待归档"}
+                  </small>
+                  <button
+                    type="button"
+                    disabled={!!draft || saving || loading}
+                    onClick={() =>
+                      start({
+                        operation: "correct",
+                        memoryId: m.id,
+                        text: m.text,
+                        original: m.text,
+                      })
+                    }
+                  >
+                    <Pencil size={12} />
+                    更正
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!!draft || saving || loading}
+                    onClick={() =>
+                      start({
+                        operation: "deactivate",
+                        memoryId: m.id,
+                        text: m.text,
+                      })
+                    }
+                  >
+                    停用
+                  </button>
+                </div>
+              </article>
+            ))
+          ) : (
+            <p className="ag-muted">
+              目前没有启用的项目记忆。已停用内容仍可从历史查看。
+            </p>
+          )}
+        </div>
+      ) : (
+        <div className="ag-memory-history">
+          {shownHistory.length ? (
+            shownHistory.map((h) => {
+              const current = data.memory.find((m) => m.id === h.memoryId);
+              const isCurrent = current?.revisionId === h.revisionId;
+              return (
+                <article key={h.revisionId}>
+                  <div>
+                    <span className={`ag-history-operation ${h.operation}`}>
+                      {operationLabels[h.operation]}
+                    </span>
+                    {isCurrent && (
+                      <span className="ag-memory-active">当前版本</span>
+                    )}
+                    <time>{date(h.at)}</time>
+                  </div>
+                  <p>{h.text}</p>
+                  {h.reason && (
+                    <p className="ag-history-reason">说明：{h.reason}</p>
+                  )}
+                  <div className="ag-memory-row-actions">
+                    <small title={h.revisionId}>
+                      {h.source || "用户记忆"} · {h.revisionId.slice(0, 8)}
+                    </small>
+                    {!isCurrent && h.operation !== "deactivated" && (
+                      <button
+                        type="button"
+                        disabled={!!draft || saving || loading}
+                        onClick={() =>
+                          start({
+                            operation: "restore",
+                            memoryId: h.memoryId,
+                            revisionId: h.revisionId,
+                            text: h.text,
+                            original: current?.text,
+                          })
+                        }
+                      >
+                        <History size={12} />
+                        核对并恢复此版本
+                      </button>
+                    )}
+                  </div>
+                </article>
+              );
+            })
+          ) : (
+            <p className="ag-muted">
+              这里还没有{view === "inactive" ? "已停用记忆" : "版本历史"}。
+            </p>
+          )}
+        </div>
+      )}
+      {!!project.decisions.length && (
+        <details className="ag-decision-list">
+          <summary>研究提出的项目决策（供参考）</summary>
+          {project.decisions.map((d, i) => (
+            <p key={i}>
+              {typeof d === "string" ? d : d.text || d.title || "未命名决策"}
+            </p>
+          ))}
+        </details>
+      )}
+    </div>
+  );
+}
+
 function ProjectModal({
   mode,
   project,
   onClose,
   onSave,
+  request,
+  onMemoryChanged,
 }: {
   mode: "new" | "edit";
   project?: Project;
   onClose: () => void;
   onSave: (data: unknown) => Promise<void>;
+  request: (path: string, options?: RequestInit) => Promise<unknown>;
+  onMemoryChanged: () => Promise<void>;
 }) {
   const [name, setName] = useState(mode === "edit" ? project?.name || "" : ""),
     [background, setBackground] = useState(
@@ -2574,14 +3555,12 @@ function ProjectModal({
     [constraints, setConstraints] = useState(
       mode === "edit" ? project?.constraints || "" : "",
     ),
-    [memory, setMemory] = useState(
-      mode === "edit" ? project?.memory || [] : [],
-    ),
     [tab, setTab] = useState("background"),
     [saving, setSaving] = useState(false),
     [error, setError] = useState("");
   async function save(e: FormEvent) {
     e.preventDefault();
+    if (tab === "memory") return;
     setSaving(true);
     setError("");
     try {
@@ -2590,9 +3569,6 @@ function ProjectModal({
         background,
         goal,
         constraints,
-        ...(mode === "edit"
-          ? { memory: memory.filter((m) => m.text.trim()) }
-          : {}),
       });
     } catch (e) {
       setError((e as Error).message);
@@ -2644,7 +3620,7 @@ function ProjectModal({
               onClick={() => setTab("memory")}
             >
               <Brain size={15} />
-              记忆与更正<span>{memory.length}</span>
+              记忆与历史<span>{project?.memory.length || 0}</span>
             </button>
           </div>
         )}
@@ -2694,85 +3670,14 @@ function ProjectModal({
                 </label>
               </>
             ) : (
-              <>
-                <div className="ag-note">
-                  <Brain size={15} />
-                  不准确的记忆请直接修改或移除。保存后，新任务会使用更新后的内容。
-                </div>
-                {memory.length ? (
-                  memory.map((m, i) => (
-                    <div className="ag-memory-edit" key={m.id}>
-                      <div>
-                        <span>记忆 {String(i + 1).padStart(2, "0")}</span>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setMemory(memory.filter((v) => v.id !== m.id))
-                          }
-                          aria-label={`移除记忆 ${i + 1}`}
-                        >
-                          <X size={14} />
-                        </button>
-                      </div>
-                      <textarea
-                        rows={3}
-                        value={m.text}
-                        onChange={(e) =>
-                          setMemory(
-                            memory.map((v) =>
-                              v.id === m.id
-                                ? {
-                                    ...v,
-                                    text: e.target.value,
-                                    source: "用户更正",
-                                    updatedAt: new Date().toISOString(),
-                                  }
-                                : v,
-                            ),
-                          )
-                        }
-                      />
-                      <small>
-                        {m.source || "研究记录"} · {date(m.updatedAt)}
-                      </small>
-                    </div>
-                  ))
-                ) : (
-                  <p className="ag-muted">
-                    还没有保存的项目记忆。你可以补充一个已确认的事实或决策。
-                  </p>
-                )}
-                <button
-                  type="button"
-                  className="ag-button light"
-                  onClick={() =>
-                    setMemory([
-                      ...memory,
-                      {
-                        id: crypto.randomUUID(),
-                        text: "",
-                        source: "用户补充",
-                        updatedAt: new Date().toISOString(),
-                      },
-                    ])
-                  }
-                >
-                  <Plus size={14} />
-                  添加一条记忆
-                </button>
-                {!!project?.decisions?.length && (
-                  <div className="ag-decision-list">
-                    <h4>已记录的项目决策</h4>
-                    {project.decisions.map((d, i) => (
-                      <p key={i}>
-                        {typeof d === "string"
-                          ? d
-                          : d.text || d.title || "未命名决策"}
-                      </p>
-                    ))}
-                  </div>
-                )}
-              </>
+              project && (
+                <MemoryManager
+                  key={project.id}
+                  project={project}
+                  request={request}
+                  onChanged={onMemoryChanged}
+                />
+              )
             )}
             {error && (
               <div className="ag-error">
@@ -2782,7 +3687,11 @@ function ProjectModal({
             )}
           </div>
           <div className="ag-modal-footer">
-            <span>保存不会自动调用模型</span>
+            <span>
+              {tab === "memory"
+                ? "记忆操作分别确认并即时保存"
+                : "保存不会自动调用模型"}
+            </span>
             <button
               className="ag-button light"
               type="button"
@@ -2791,17 +3700,28 @@ function ProjectModal({
             >
               取消
             </button>
-            <button
-              className="ag-button primary"
-              disabled={saving || !name.trim()}
-            >
-              {saving ? (
-                <Loader2 size={15} className="ag-spin" />
-              ) : (
+            {tab === "memory" ? (
+              <button
+                type="button"
+                className="ag-button primary"
+                onClick={onClose}
+              >
+                完成
                 <Check size={15} />
-              )}
-              保存{mode === "new" ? "项目" : "更改"}
-            </button>
+              </button>
+            ) : (
+              <button
+                className="ag-button primary"
+                disabled={saving || !name.trim()}
+              >
+                {saving ? (
+                  <Loader2 size={15} className="ag-spin" />
+                ) : (
+                  <Check size={15} />
+                )}
+                保存{mode === "new" ? "项目" : "更改"}
+              </button>
+            )}
           </div>
         </form>
       </section>

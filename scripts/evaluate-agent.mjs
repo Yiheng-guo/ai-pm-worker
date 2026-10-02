@@ -419,7 +419,7 @@ const memoryProject = await createEvaluationProject("评测 · 跨会话记忆�
 report.projectIds.push(memoryProject.id);
 let current = memoryProject;
 const memory = (current.memory || []).concat(memoryFacts.map((text) => ({ id: randomUUID(), text, source: "evaluation-fixture", updatedAt: now() })));
-await api(`/api/agent/projects/${memoryProject.id}`, { memory }, "PATCH");
+current = await api(`/api/agent/projects/${memoryProject.id}`, { memory, expectedRevision: current.memoryRevision ?? 0 }, "PATCH");
 function memoryScore(result, expectedPeople) {
   const text = facts(result);
   const people = expectedPeople === 3 ? "3|三" : "2|两|二";
@@ -429,7 +429,7 @@ function memoryScore(result, expectedPeople) {
 const recallPrompt = "请回忆本项目保存的受控评测设定：第一版范围是什么？是否允许自动向第三方发送消息？演示团队当前有几人？如有已作废旧值，请明确区分；不知情时请说不知道。";
 for (const expectedPeople of [3, 2]) {
   const corrected = memory.map((item) => item.text.includes("演示团队人数") ? { ...item, text: "受控评测设定：演示团队人数已纠正为 2 人，旧值 3 人已作废。", updatedAt: now() } : item);
-  if (expectedPeople === 2) await api(`/api/agent/projects/${memoryProject.id}`, { memory: corrected }, "PATCH");
+  if (expectedPeople === 2) current = await api(`/api/agent/projects/${memoryProject.id}`, { memory: corrected, expectedRevision: current.memoryRevision ?? 0 }, "PATCH");
   const recall = { id: expectedPeople === 3 ? "memory-initial" : "memory-correction", title: expectedPeople === 3 ? "跨会话初始记忆召回" : "跨会话记忆与过时事实纠正", prompt: recallPrompt };
   const recallFolder = join(folder, recall.id);
   await mkdir(recallFolder, { recursive: true });

@@ -20,6 +20,7 @@ flowchart LR
 |---|---|---|
 | 工作台与交互 | `src/AgentApp.tsx`、`src/agent.css` | 默认新入口；`/?legacy=1` 保留旧版 |
 | 项目、任务与关联 | `server/agent-router.mjs` | 每个项目同时最多一个执行任务；提交支持幂等键 |
+| 记忆变更 | `server/project-memory.mjs` | 当前有效记忆与追加历史分开；expectedRevision 防止旧页面覆盖 |
 | 公开取证 | `server/evidence.mjs`、`runtime/search.py` | 搜索结果仅提供 URL，事实来自实际抓取正文 |
 | nanobot 运行 | `runtime/bridge.py`、`server/nanobot-runtime.mjs` | 固定上游版本；默认工具为空；调用原始记录私有保存 |
 | 模型与计量 | 两个仓库的 `server/provider.mjs` | 保存最终输出与公开运行事件，过滤推理事件；缺用量为 null |
@@ -32,15 +33,21 @@ flowchart LR
 
 | 入口 | 用途 |
 |---|---|
-| `GET /bootstrap` | 项目、运行、评测与运行状态 |
+| `GET /bootstrap` | 精简项目、运行、评测与运行状态；`?full=1` 兼容原响应 |
 | `POST /projects`、`PATCH /projects/:id` | 建立项目、修改背景、确认或纠正记忆 |
+| `GET /projects/:id/memory` | 当前记忆、版本与历史 |
+| `POST /projects/:id/memory` | 明确确认新记忆，需 expectedRevision 与 confirm:true |
+| `PATCH /projects/:id/memory/:memoryId` | 纠正或停用，需版本校验 |
+| `POST /projects/:id/memory/:memoryId/restore` | 指定历史版本并重新确认，追加恢复记录 |
 | `POST /runs` | 研究或回忆，返回任务后异步执行 |
+| `POST /runs` 的 `sourceIds` | 仅显式复用本项目的 SHA256 验证快照；不重新抓取 |
 | `GET /runs/:id`、`POST /runs/:id/cancel` | 状态、原始记录与取消 |
 | `POST /runs/:id/prototype` | 从本项目的已完成研究需求生成原型 |
-| `PATCH /runs/:id/actions/:actionId` | 保存行动项完成状态 |
+| `PATCH /runs/:id/actions/:actionId` | 串行保存完成状态、dueDate（YYYY-MM-DD/null）与 note |
 | `GET /runs/:id/export` | 研究记录、模型调用与证据快照包 |
 | `GET /prototypes/:id/download` | 原型源码、需求和来源清单 |
 | `GET /evaluations/:id/export` | 评测及配对样本原始记录 |
+| `GET /evaluations/:id` | 需要时载入完整评测案例 |
 
 ## 本机开发与复现
 
@@ -55,9 +62,11 @@ Node 依赖通过 `package-lock.json` 与 `npm ci` 复现。Python 上游提交�
 ## 后续优先级
 
 1. 扩大固定任务池，加入矛盾证据、缺少来源和过时记忆；由独立审查者复核事实与需求可用性。
-2. 增加记忆变更历史、撤销和来源有效期；当前纠正会更新现值，历史任务快照保留旧值。
-3. 增加已保存证据的检索与选择，减少后续对话重复抓取；当前研究从本次抓取材料分析，回忆从项目背景与历史运行分析。
+2. 在已实现的记忆变更历史与明确恢复上增加更细的来源核查；当前有效值优先，变更后隔离旧会话上下文。
+3. 在已实现的已存证据选择上增加逐条主张摘录与人工复核；保留年龄和哈希，不能用旧快照冒充本次更新。
 4. 有真实 API 授权后验证 API 路线及提供商原始用量，再接入有来源的价格表与账单对照。
 5. 需要常驻跟进时再部署执行层和调度；当前待办是可保存的行动列表。
 
 没有引入自动技能晋升、任意 Shell、多人账号或自动公开发布。它们需要另外的效果评测、授权与运行设计，不能从这一版演示推出已经具备。
+
+本机版本归档可在工作树保存后运行 `node scripts/package-delivery.mjs --output ../deliverables/版本目录 --iteration 迭代档案ID`。脚本只从干净的本机提交收集两个源码项目，另行打包指定的历史评测和迭代验收。它不会上传或发布 GitHub，也不会在源码 ZIP 中带入凭证、数据库或运行环境。
