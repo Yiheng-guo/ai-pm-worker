@@ -19,6 +19,8 @@ Node 通过 JSONL 调用 Python。Python 使用真实 nanobot AgentLoop/AgentRun
 
 0.4 的需求可带 `basis`（主张数组索引、项目字段、有效记忆 ID、假设、验证方法），行动用 `requirementIndices` 指向本次需求数组。桥接拒绝越界、重复和无效当前记忆关联，保留原始无效输出而不重试。旧输出的 basis 为 null、行动关联为空时不猜测论证。数组索引从 0 开始，不依赖模型重复的 R1/A1 标签。
 
+0.5 把已收到的 result 回执与进程最终退出分开；即使随后取消，也保留已返回的 raw、用量和输出，不发布成功结果。未报告部分仍为未知。模型输入中明确区分 Git 固定提交文档与提交者文本的本机导入，不能把 URL 或导入时间当作在线核验、发布日期或确认记忆。
+
 生成用 provider schema 与历史解析不同：严格新 schema 所有对象属性均 required，默认数组需要明确为空，nullable 字段需要明确 null；Pydantic 历史解析继续接受缺省字段。fixture 通过独立 JSON Schema 验证器检查两种边界。
 
 本机 Codex 通过现有登录调用；不读取用户 config，禁用 shell、网页搜索、MCP apps、plugins、hooks、computer use 等，设置 read-only sandbox。检索在 Node 的公共证据工具完成，不把网页中的指令执行。每个 Codex prompt 保存在 `.runtime/records/.../call-N/prompt.txt`（0600），以普通文件作为 stdin；stdout/stderr 独立消费，避免大管道 BrokenPipe 隐藏真正诊断。首次 attempt 先存 pending `call.json`，异常也会补齐退出码和脱敏诊断。

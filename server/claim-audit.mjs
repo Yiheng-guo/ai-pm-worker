@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
+import { isUsableEvidence } from "./evidence.mjs";
 
 const hash = value => createHash("sha256").update(value).digest("hex");
 const fail = (message, status = 400) => Object.assign(new Error(message), { status });
@@ -27,7 +28,7 @@ const recordId = (runId, key) => "claim-review-" + hash(JSON.stringify([runId, k
 
 function sourceFootprint(source) {
   if (!source) return null;
-  return { id: source.id, url: source.url || null, sha256: source.sha256 || null, rawSha256: typeof source.raw === "string" ? hash(source.raw) : null, textSha256: typeof source.text === "string" ? hash(source.text) : null, fetchedAt: source.fetchedAt || null, status: source.status || null, truncated: !!source.truncated, reusedFrom: source.reusedFrom || null, reusedAt: source.reusedAt || null, ...(source.extraction ? { extraction: source.extraction } : {}) };
+  return { id: source.id, url: source.url || null, sha256: source.sha256 || null, rawSha256: typeof source.raw === "string" ? hash(source.raw) : null, textSha256: typeof source.text === "string" ? hash(source.text) : null, fetchedAt: source.fetchedAt || null, status: source.status || null, truncated: !!source.truncated, reusedFrom: source.reusedFrom || null, reusedAt: source.reusedAt || null, ...(source.extraction ? { extraction: source.extraction } : {}), ...(source.origin ? { origin: source.origin, capturedAt: source.capturedAt || null } : {}) };
 }
 export function claimFingerprint(run, claim) {
   const ids = [...new Set(claim.sourceIds || [])].sort();
@@ -59,7 +60,7 @@ export function validateQuote(run, claim, citation) {
   const matches = (run.sources || []).filter(s => s.id === sourceId);
   if (matches.length !== 1) throw fail("当前任务的引文来源不存在或 ID 重复，无法安全定位。");
   const source = matches[0];
-  if (source.status !== "fetched" || typeof source.raw !== "string" || !/^[a-f0-9]{64}$/.test(source.sha256 || "") || hash(source.raw) !== source.sha256) throw fail("来源原始快照或 SHA256 校验不可用，不能保存可追溯引文。");
+  if (!isUsableEvidence(source)) throw fail("来源原始快照或 SHA256 校验不可用，不能保存可追溯引文。");
   if (typeof source.text !== "string" || typeof quote !== "string" || !quote.trim().length || quote.length > 4000 || !wellFormed(quote)) throw fail("引文必须是有效文本，并且位于已保存的提取正文内。");
   const positions = [];
   for (let at = source.text.indexOf(quote); at >= 0; at = source.text.indexOf(quote, at + 1)) {
@@ -71,7 +72,7 @@ export function validateQuote(run, claim, citation) {
   return {
     sourceId, quote, matched: true, validation: "literal-only",
     locator: { unit: "utf16-code-unit", start: selected, end: selected + quote.length, occurrenceCount: positions.length, occurrenceIndex: positions.indexOf(selected) + 1 },
-    sourcePin: { url: source.url, retrievalUrl: source.retrievalUrl || source.url, sha256: source.sha256, textSha256: hash(source.text), fetchedAt: source.fetchedAt || null, publishedAt: null, publishedDateKnown: false, truncated: !!source.truncated, ...(source.extraction ? { extraction: source.extraction } : {}), reusedFrom: source.reusedFrom || null, reusedAt: source.reusedAt || null, ageAtReuseSeconds: source.ageAtReuseSeconds ?? null },
+    sourcePin: { url: source.url, retrievalUrl: source.retrievalUrl || source.url, sha256: source.sha256, textSha256: hash(source.text), fetchedAt: source.fetchedAt || null, publishedAt: null, publishedDateKnown: false, truncated: !!source.truncated, ...(source.extraction ? { extraction: source.extraction } : {}), ...(source.origin ? { origin: source.origin, capturedAt: source.capturedAt || null } : {}), reusedFrom: source.reusedFrom || null, reusedAt: source.reusedAt || null, ageAtReuseSeconds: source.ageAtReuseSeconds ?? null },
   };
 }
 function quoteChecks(run, claim) {

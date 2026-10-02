@@ -71,6 +71,30 @@ test("选择语义明确，unknown或项目推导允许探索，完整字符预�
   }
 });
 
+test("模型简报合并重复来源元数据，仍保留逐字引文、定位、审阅和完整冻结依据", () => {
+  const { parent, project } = data();
+  parent.sources[0].status = "imported";
+  parent.sources[0].fetchedAt = null;
+  parent.sources[0].capturedAt = "2026-10-02T00:00:00Z";
+  parent.sources[0].retrievalUrl = "https://example.com/actual-reading-address";
+  parent.sources[0].ageAtReuseSeconds = 45;
+  parent.sources[0].origin = { kind: "git-commit", commit: "a".repeat(40), relativePath: "README.md", note: "明确本机固定提交，非网络验证。".repeat(30) };
+  parent.result.claims[0].citations = [{ sourceId: "s", quote: "公开声明。", start: 0 }];
+  const audit = projectClaimAudit(parent); audit.claims[0].review.citations = structuredClone(audit.claims[0].quoteChecks); audit.claims[0].review.status = "supported";
+  const args = { parent, currentProject: project, audit, body: { requirementIndices: [1] } };
+  const brief = buildPrototypeBrief(args), c = brief.modelInput.requirements[0].bindings.claims[0];
+  assert.equal(c.quoteChecks[0].quote, "公开声明。"); assert.equal(c.quoteChecks[0].locator.start, 0);
+  assert.equal(c.citations[0].quote, "公开声明。"); assert.equal(c.reviewSnapshot.status, "supported");
+  assert.equal(c.quoteChecks[0].sourcePin, undefined); assert.equal(c.citations[0].sourcePin, undefined);
+  assert.equal(brief.modelInput.sources[0].origin.kind, "git-commit"); assert.equal(brief.modelInput.sources[0].sha256, parent.sources[0].sha256);
+  assert.equal(brief.modelInput.sources[0].retrievalUrl, parent.sources[0].retrievalUrl); assert.equal(brief.modelInput.sources[0].ageAtReuseSeconds, 45);
+  assert.equal(brief.requirements[0].bindings.claims[0].quoteChecks[0].sourcePin.origin.commit, "a".repeat(40));
+  assert.equal(brief.sourceSnapshots[0].raw, parent.sources[0].raw);
+  const digest = brief.briefFingerprint; parent.sources[0].origin.commit = "b".repeat(40);
+  assert.notEqual(buildPrototypeBrief({ ...args, audit: projectClaimAudit(parent) }).briefFingerprint, digest);
+  assert.equal(brief.sourceSnapshots[0].origin.commit, "a".repeat(40));
+});
+
 test("路由预算及过期预览拒绝发生在造物调用前，冻结导出保持生成时依据", async t => {
   const dir = await mkdtemp(join(tmpdir(), "basis-routes-")); await writeFile(join(dir, "README.md"), "只用于隔离路由测试的背景资料。" );
   const store = await createStore(dir); const { parent, project } = data(); await store.put("research-project", project); await store.put("agent-run", parent);

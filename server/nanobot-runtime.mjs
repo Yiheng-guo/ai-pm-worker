@@ -25,12 +25,12 @@ function diagnostic(value, payload) {
     }).slice(-2000);
 }
 
-async function invoke(payload, { signal, onEvent, status = false } = {}) {
+export async function invokeNanobotProtocol(payload, { signal, onEvent, status = false, pythonExecutable = python, bridgePath = bridge } = {}) {
   if (signal?.aborted) throw Object.assign(new Error("任务已取消"), { name: "AbortError" });
-  try { await access(python, constants.X_OK); }
+  try { await access(pythonExecutable, constants.X_OK); }
   catch { throw new Error("nanobot 运行环境尚未安装，请运行 bash runtime/setup.sh。"); }
   return new Promise((resolveResult, reject) => {
-    const child = spawn(python, [bridge, ...(status ? ["--status"] : [])], {
+    const child = spawn(pythonExecutable, [bridgePath, ...(status ? ["--status"] : [])], {
       cwd: root, stdio: ["pipe", "pipe", "pipe"], detached: process.platform !== "win32",
       env: { ...process.env, PYTHONUNBUFFERED: "1", PYTHONDONTWRITEBYTECODE: "1", NANOBOT_BRIDGE_ROOT: root },
     });
@@ -77,8 +77,9 @@ async function invoke(payload, { signal, onEvent, status = false } = {}) {
     child.on("error", (error) => finish(new Error(`无法启动 nanobot Python 运行时：${diagnostic(error.message, payload)}`)));
     child.on("close", (code) => {
       consume(buffer);
-      if (cancelled) return finish(Object.assign(new Error("任务已取消"), { name: "AbortError", raw: failure?.raw, usage: failure?.usage }));
-      if (timedOut) return finish(Object.assign(new Error("nanobot 运行超时；原始输入已保存在私有运行记录。"), { raw: failure?.raw, usage: failure?.usage }));
+      const receipt = { raw: lastResult?.raw || failure?.raw, usage: lastResult?.usage || failure?.usage, ...(lastResult ? { returnedOutput: lastResult } : {}) };
+      if (cancelled) return finish(Object.assign(new Error("任务已取消"), { name: "AbortError", ...receipt }));
+      if (timedOut) return finish(Object.assign(new Error("nanobot 运行超时；原始输入已保存在私有运行记录。"), receipt));
       if (failure || code !== 0 || !lastResult) {
         const detail = diagnostic(failure?.message || stderr, payload);
         const error = new Error(detail || `nanobot 运行失败（进程退出码 ${code}）。请检查本机 Codex 登录或模型设置。`);
@@ -94,7 +95,7 @@ async function invoke(payload, { signal, onEvent, status = false } = {}) {
 }
 
 export async function getRuntimeStatus() {
-  try { return await invoke(null, { status: true }); }
+  try { return await invokeNanobotProtocol(null, { status: true }); }
   catch (error) { return { installed: false, name: "nanobot", version: null, commit: NANOBOT_COMMIT, message: error.message }; }
 }
 
@@ -108,7 +109,7 @@ export async function runNanobot({ project, prompt, sources = [], history = [], 
   // One project turn at a time prevents concurrent Python processes from
   // overwriting the same session or racing a user correction of project memory.
   const previous = projectTurns.get(project.id) || Promise.resolve();
-  const execution = previous.catch(() => {}).then(() => invoke(input, { signal, onEvent }));
+  const execution = previous.catch(() => {}).then(() => invokeNanobotProtocol(input, { signal, onEvent }));
   projectTurns.set(project.id, execution);
   try { return await execution; }
   finally { if (projectTurns.get(project.id) === execution) projectTurns.delete(project.id); }

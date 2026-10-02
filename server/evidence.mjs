@@ -7,6 +7,9 @@ import { promisify } from "node:util";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 const exec = promisify(execFile);
+export function isUsableEvidence(source) {
+  return ["fetched", "imported"].includes(source?.status) && (source.status !== "imported" || ["git-commit", "text-import"].includes(source.origin?.kind)) && typeof source.raw === "string" && typeof source.text === "string" && source.text.length > 0 && /^[a-f0-9]{64}$/.test(source.sha256 || "") && createHash("sha256").update(source.raw).digest("hex") === source.sha256 && (!source.textSha256 || createHash("sha256").update(source.text).digest("hex") === source.textSha256);
+}
 export function forbiddenAddress(address) {
   const a = address.toLowerCase();
   if (a.includes(":")) return !/^[23][0-9a-f]{3}:/.test(a);

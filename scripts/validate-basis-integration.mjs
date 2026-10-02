@@ -10,7 +10,10 @@ const option = (name, fallback = "") => args.includes(name) ? args[args.indexOf(
 const parentRunId = option("--prototype");
 const attempt = option("--attempt", parentRunId ? "prototype-single" : "research");
 if (!/^[a-zA-Z0-9_-]{1,60}$/.test(attempt)) throw new Error("Invalid attempt name");
-const directory = resolve("data/iterations/2026-10-02-v04/" + attempt);
+const iteration = option("--iteration", "2026-10-02-v04");
+if (!/^2026-10-02-v\d{2}$/.test(iteration)) throw new Error("Invalid iteration name");
+const importedSourceIds = option("--source-ids").split(",").filter(Boolean);
+const directory = resolve("data/iterations/" + iteration + "/" + attempt);
 if (existsSync(directory + "/input.json")) throw new Error("Attempt already archived; use a fresh name. No call made.");
 await mkdir(directory, { recursive: true });
 const base = "http://127.0.0.1:4310/api/agent";
@@ -38,8 +41,8 @@ if (parentRunId) {
   await writeFile(directory + "/preview.json", JSON.stringify(preview, null, 2));
 } else {
   input = {
-    projectId: project.id, kind: "research", sessionId: "basis-v04-" + randomUUID().replaceAll("-", ""),
-    sourceUrls: ["https://raw.githubusercontent.com/HKUDS/nanobot/d0d0a44e57632c3d269e511339cff7ddb698e62e/README.md"], sourceIds: [],
+    projectId: project.id, kind: "research", sessionId: "basis-" + iteration + "-" + randomUUID().replaceAll("-", ""),
+    sourceUrls: importedSourceIds.length ? [] : [option("--source-url", "https://raw.githubusercontent.com/HKUDS/nanobot/d0d0a44e57632c3d269e511339cff7ddb698e62e/README.md")], sourceIds: importedSourceIds,
     prompt: "围绕当前亦伴和造物的实际项目背景，研究所提供固定 nanobot 提交的 README 机制参考。它不是最新版状态核验。请给出恰好4条 claims：2条仓库官方公开声明 fact，各附本次正文连续逐字原文 citations；1条结合本项目的研发价值/成本风险判断 inference；1条对本轮机制净收益仍缺少证明的 unknown。背景里已有有限实测和失败记录，不得扩大成没有任何实测。不要给未核实的人数、价格、性能、star数或准确率。针对既有能力的下一步缺口提出恰好2条 requirements：一条优先验证项目记忆/背景变化如何影响已有需求与原型的复核，一条验证研究质量和人工审阅成本；不要把已存在功能当作从零建设。每条 basis 都明确本次0-based claimIndices、projectFields、当前确认memoryIds（有必要才引用），以及价值假设 assumptions 和验证方法 verification。来源只证明公开机制声明，不能直接证明需求价值。给出恰好2条 actions，分别关联需求0和1的 requirementIndices，done=false。answer与valueJudgment清楚说明采用或不采用的理由、边界和下一步，不自动执行或外发。",
   };
 }

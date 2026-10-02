@@ -5,10 +5,12 @@ import { readFile, readdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import JSZip from "jszip";
 import { getRuntimeStatus, runNanobot } from "./nanobot-runtime.mjs";
-import { discoverSources, fetchEvidence } from "./evidence.mjs";
+import { discoverSources, fetchEvidence, isUsableEvidence } from "./evidence.mjs";
+import { createSourceIntake, resolveImportedSource } from "./source-intake.mjs";
 import { prepareMemoryProject, requireMemoryRevision, replaceMemory, changeMemory, addMemory, restoreMemory, runtimeProject } from "./project-memory.mjs";
 import { createClaimAudit, projectClaimAudit } from "./claim-audit.mjs";
 import { buildPrototypeBrief, briefPreview, projectRequirementBasis, prototypeRequestSchema } from "./requirement-basis.mjs";
+import { actionEditable, actionChangeSchema, stableActionChangeSchema, findActionByKey, projectActionItems, projectRunActions } from "./action-items.mjs";
 
 const now = () => new Date().toISOString();
 const memorySchema = z.object({ id: z.string().min(1), text: z.string().min(1).max(2000), source: z.string().max(300).default("用户确认"), updatedAt: z.string().default(now) });
@@ -45,6 +47,8 @@ export async function createAgentRouter({ store, settings, root, cloud, runner =
   const actionWrites = new Map();
   const pendingKeys = new Map();
   const projectEdits = new Set();
+  const activeRuns = new Map();
+  const finalizing = new Set();
   const foundryBase = process.env.FOUNDRY_URL || "http://127.0.0.1:4320";
   const foundry = new URL(foundryBase);
   if (!["127.0.0.1", "localhost"].includes(foundry.hostname) || foundry.protocol !== "http:")
@@ -76,6 +80,7 @@ export async function createAgentRouter({ store, settings, root, cloud, runner =
     return run;
   }
   const claimAudit = createClaimAudit({ store, getRun: findRun, isSaving: id => controllers.has(id) });
+  router.use(createSourceIntake({ store, root, cloud, getProject: project }));
   async function preparePrototypeBrief(parent, currentProject, body) {
     const previous = body.prototypeMode === "new" || (body.prototypeMode === undefined && body.requirementIndices) ? null : (await store.list("agent-run")).filter(r => r.projectId === parent.projectId && r.kind === "prototype" && r.status === "completed" && r.prototype?.projectId).sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""))[0] || null;
     return buildPrototypeBrief({ parent, currentProject, body, previousPrototype: previous, audit: await claimAudit.forRun(parent) });
@@ -98,7 +103,7 @@ export async function createAgentRouter({ store, settings, root, cloud, runner =
     return { ...runtime, provider: config.provider, model: config.model || (config.provider === "codex" ? "Codex 账号默认模型" : ""), foundryAvailable };
   }
   function compactRun({ raw, sources = [], prototype, ...run }) {
-    return { ...run, sources: sources.map(({ raw, text, ...source }) => source), ...(prototype ? { prototype: { ...prototype, code: undefined, prd: undefined } } : {}), detailAvailable: true };
+    return { ...run, ...(raw?.foundryRecovery ? { cancellationRecovery: { ...raw.foundryRecovery, projectId: raw.foundryReceipt?.projectId || null, versionId: raw.foundryReceipt?.versionId || null } } : {}), sources: sources.map(({ raw, text, ...source }) => source), ...(prototype ? { prototype: { ...prototype, code: undefined, prd: undefined } } : {}), detailAvailable: true };
   }
   function compactEvaluation({ cases, raw, ...report }) { return { ...report, caseCount: cases?.length || 0, detailAvailable: true }; }
   router.get("/bootstrap", async (req, res) => {
@@ -107,7 +112,7 @@ export async function createAgentRouter({ store, settings, root, cloud, runner =
     const [projects, runs, evaluations, runtime, reviews] = await Promise.all([
       store.list("research-project"), store.list("agent-run"), store.list("evaluation"), status(), store.list("claim-review"),
     ]);
-    const projectedRuns = runs.map(run => ({ ...run, claimAuditSummary: projectClaimAudit(run, reviews.filter(r => r.runId === run.id && r.projectId === run.projectId)).summary }));
+    const projectedRuns = runs.map(run => projectRunActions({ ...run, claimAuditSummary: projectClaimAudit(run, reviews.filter(r => r.runId === run.id && r.projectId === run.projectId)).summary }));
     res.json({
       projects: projects.map(p => { const prepared = prepareMemoryProject(p); if (!compact) return prepared; const { memoryHistory, ...summary } = prepared; return summary; }), runs: compact ? projectedRuns.map(compactRun) : projectedRuns.map(({ raw, sources, ...run }) => ({ ...run, sources: (sources || []).map(({ raw, ...s }) => s) })),
       evaluations: compact ? evaluations.map(compactEvaluation) : evaluations, runtime, compact,
@@ -148,14 +153,45 @@ export async function createAgentRouter({ store, settings, root, cloud, runner =
   router.post("/projects/:id/memory/:memoryId/restore", async (req, res) => editMemory(req, res, {
     schema: revisionSchema.extend({ revisionId: z.string().min(1).max(100) }), change: (p, input) => restoreMemory(p, req.params.memoryId, input.revisionId, input.reason),
   }));
-  async function foundryRequest(path, options, signal, cookie = "") {
+  async function foundryRequest(path, options, signal, cookie = "", timeoutMs = 20000) {
     const response = await fetch(foundryBase + "/api" + path, {
       ...options, headers: { "Content-Type": "application/json", ...(cookie ? { Cookie: cookie } : {}) },
-      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(20000)]) : AbortSignal.timeout(20000),
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
     });
     const data = await response.json();
-    if (!response.ok) throw new Error(data.error || "造物服务请求失败。");
+    if (!response.ok) throw Object.assign(new Error(data.error || "造物服务请求失败。"), { status: response.status, code: data.code });
     return { data, response };
+  }
+  function captureOutput(run, output) {
+    const { raw, engine, usage, ...returnedOutput } = output;
+    run.raw.returnedOutput = returnedOutput;
+    run.raw.model = raw;
+    run.raw.modelReceipt = { receivedAt: now(), type: "result" };
+    run.engine = engine;
+    run.usage = { ...emptyUsage(), ...usage };
+  }
+  function captureFoundry(run, job) {
+    const prior = run.raw.foundryReceipt?.jobId === job.id ? run.raw.foundryReceipt : {};
+    const usage = job.usage || prior.usage || null;
+    if (usage) run.usage = usage;
+    run.raw.foundryReceipt = { jobId: job.id, status: job.status, versionId: job.versionId || prior.versionId || null, projectId: job.projectId || prior.projectId || null, trace: job.modelTrace || prior.trace || null, usage, returnedResult: job.returnedResult || job.result || prior.returnedResult || null, receivedAt: now() };
+  }
+  async function recoverFoundry(run, jobId, cookie) {
+    const deadline = Date.now() + 3000;
+    let recovered;
+    try {
+      try { const { data } = await foundryRequest("/jobs/" + jobId + "/cancel", { method: "POST" }, null, cookie, 900); if (data?.id === jobId) { recovered = data; captureFoundry(run, data); } } catch (error) { run.raw.foundryCancelResponse = { code: error.code || null, status: error.status || null, message: error.message }; }
+      while (Date.now() < deadline) {
+        try {
+          const { data: job } = await foundryRequest("/jobs/" + jobId, {}, null, cookie, Math.max(1, Math.min(700, deadline - Date.now())));
+          recovered = job; captureFoundry(run, job);
+          if (readyStatus.includes(job.status) && !job.cancellationPending) break;
+        } catch (error) { run.raw.foundryRecoveryError = error.message; }
+        if (Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 100));
+      }
+    } finally {
+      run.raw.foundryRecovery = { jobId, complete: !!recovered && readyStatus.includes(recovered.status) && !recovered.cancellationPending, upstreamOutcome: recovered?.status === "completed" ? "completed-after-cancel-request" : recovered?.status || "unavailable", recoveredAt: now(), note: "仅收回已有任务记录，没有重新调用模型；未返回的用量仍为未知。" };
+    }
   }
   async function generatePrototype(run, parent, signal) {
     if (cloud) throw new Error("本机原型服务不能从云端直接调用。请使用本机工作台。");
@@ -177,22 +213,30 @@ export async function createAgentRouter({ store, settings, root, cloud, runner =
     const prompt = brief.prompt;
     const previous = brief.revisionTarget;
     const path = previous ? "/projects/" + previous.projectId + "/revise" : "/jobs";
-    const created = await foundryRequest(path, { method: "POST", body: JSON.stringify({ title: run.raw.project.name + " · 需求验证原型", prompt, kind: "custom", provider: config.provider, documentIds: [], ...(previous ? { expectedVersionId: previous.versionId, expectedHtmlSha256: previous.htmlSha256 } : {}) }) }, signal, cookie);
+    signal.throwIfAborted();
+    // Read the accepted job ID even if local cancellation arrives during POST;
+    // otherwise a paid upstream task could become impossible to cancel/query.
+    const created = await foundryRequest(path, { method: "POST", body: JSON.stringify({ title: run.raw.project.name + " · 需求验证原型", prompt, kind: "custom", provider: config.provider, documentIds: [], ...(previous ? { expectedVersionId: previous.versionId, expectedHtmlSha256: previous.htmlSha256 } : {}) }) }, null, cookie, 4000);
     run.raw.foundryJobId = created.data.id;
-    await event(run, previous ? "造物正在生成新版本，已有版本会保留" : "造物已接收需求，正在生成交互原型");
     let finished = false;
     try {
+      signal.throwIfAborted();
+      await event(run, previous ? "造物正在生成新版本，已有版本会保留" : "造物已接收需求，正在生成交互原型");
       const deadline = Date.now() + 650000;
       while (Date.now() < deadline) {
         signal.throwIfAborted();
         const { data: job } = await foundryRequest("/jobs/" + created.data.id, {}, signal, cookie);
+        captureFoundry(run, job);
+        signal.throwIfAborted();
         if (job.status === "failed") throw Object.assign(new Error(job.error || "原型生成失败。"), { raw: { foundryJobId: job.id, model: job.modelTrace || null, errorCode: job.errorCode || null, inputBudget: job.inputBudget || null, inputValidation: job.inputValidation || null }, usage: job.usage });
-        if (job.status === "cancelled") throw new Error("造物任务已取消。");
+        if (job.status === "cancelled") throw Object.assign(new Error("造物任务已取消。"), { usage: job.usage, raw: { foundryJobId: job.id, model: job.modelTrace || null } });
         if (job.status === "completed") {
           if (!job.result?.code || job.provider === "demo") throw new Error("造物返回的是演示模板，未完成真实原型生成。");
           const { data: p } = await foundryRequest("/projects/" + job.projectId, {}, signal, cookie);
           const v = job.versionId ? p.versions.find(v => v.id === job.versionId) : p.versions.at(-1);
           if (!v) throw Object.assign(new Error("造物指定的生成版本不可用，已保留结果，不能绑定其他版本。"), { raw: { foundryJobId: job.id, versionId: job.versionId, result: job.result, model: job.modelTrace || null }, usage: job.usage });
+          signal.throwIfAborted();
+          finalizing.add(run.id);
           run.prototype = { projectId: p.id, versionId: v.id, title: v.title, code: v.code, prd: v.prd, version: p.versions.indexOf(v) + 1, createdAt: v.createdAt, versionSelection: job.versionId ? "job-version-id" : "legacy-latest-unverified" };
           const claimIndices = new Set(brief.requirements.flatMap(r => r.bindings.claims.map(c => c.index)));
           run.result = { requirements: brief.selectedIndices.map(i => parent.result.requirements[i]), claims: (parent.result.claims || []).filter((_, i) => claimIndices.has(i)), actions: [], valueJudgment: "此原型用于探索选定需求；完整价值判断保存在原研究任务 " + parent.id, answer: "已将选定研究需求交给造物并保存原型版本。请在隔离预览中验证交互。", memoryUpdates: [] };
@@ -210,7 +254,7 @@ export async function createAgentRouter({ store, settings, root, cloud, runner =
       }
       throw new Error("原型生成超过时间上限。");
     } finally {
-      if (!finished) try { await foundryRequest("/jobs/" + created.data.id + "/cancel", { method: "POST" }, null, cookie); } catch {}
+      if (!finished) await recoverFoundry(run, created.data.id, cookie);
     }
   }
   async function execute(run, controller) {
@@ -235,48 +279,56 @@ export async function createAgentRouter({ store, settings, root, cloud, runner =
             const source = await evidenceFetcher(url, signal);
             run.sources.push(source); await store.put("agent-run", run);
           }
-          if (!run.sources.some(s => s.status === "fetched")) throw new Error("来源均未读取成功。失败原因已记录，请更换来源链接。");
+          if (!run.sources.some(isUsableEvidence)) throw new Error("来源均未读取成功。失败原因已记录，请更换来源链接或明确导入项目资料。");
         }
         signal.throwIfAborted();
         await event(run, "nanobot 正在结合项目背景形成判断与需求");
         const output = await runner({
           project: runtimeProject(run.raw.project), prompt: run.prompt,
-          sources: run.sources.filter(s => s.status === "fetched").map(({ raw, ...source }) => source), history: run.raw.history,
+          sources: run.sources.filter(isUsableEvidence).map(({ raw, ...source }) => source), history: run.raw.history,
           sessionId: run.sessionId, kind: run.kind, settings: await settings(), signal,
           onEvent: message => { if (!signal.aborted) void event(run, typeof message === "string" ? message : message?.message || JSON.stringify(message)).catch(() => {}); },
         });
+        captureOutput(run, output);
         signal.throwIfAborted();
-        run.result = {
+        const result = {
           answer: output.answer, claims: output.claims || [], valueJudgment: output.valueJudgment || "",
           requirements: output.requirements || [], actions: (output.actions || []).map(a => ({ ...a, id: a.id || randomUUID(), done: false })),
           memoryUpdates: output.memoryUpdates || [],
         };
-        run.raw.model = output.raw;
-        run.engine = output.engine;
-        run.usage = { ...emptyUsage(), ...output.usage };
-        const sourceIds = new Set(run.sources.filter(s => s.status === "fetched").map(s => s.id));
-        for (const item of [...run.result.claims, ...run.result.requirements, ...run.result.actions, ...run.result.memoryUpdates]) {
+        const sourceIds = new Set(run.sources.filter(isUsableEvidence).map(s => s.id));
+        for (const item of [...result.claims, ...result.requirements, ...result.actions, ...result.memoryUpdates]) {
           if ((item.sourceIds || []).some(id => !sourceIds.has(id))) throw new Error("模型引用了不存在的证据ID，已保留原始输出，不能作为完成结果。");
         }
         const p = await project(run.projectId);
-        p.decisions = [...(p.decisions || []), { id: randomUUID(), sourceRunId: run.id, text: run.result.valueJudgment, status: "proposal", createdAt: now() }].filter(d => d.text).slice(-30);
+        signal.throwIfAborted();
+        // No await between this check and reserving the publication boundary.
+        // The cancel route refuses requests once publishing has begun.
+        finalizing.add(run.id);
+        run.result = result;
+        p.decisions = [...(p.decisions || []), { id: randomUUID(), sourceRunId: run.id, text: result.valueJudgment, status: "proposal", createdAt: now() }].filter(d => d.text).slice(-30);
         p.updatedAt = now(); await store.put("research-project", p);
       }
-      if (signal.aborted || run.status === "cancelled") return;
+      if (!finalizing.has(run.id)) signal.throwIfAborted();
       run.status = "completed"; run.completedAt = now(); await event(run, "结果与原始记录已保存");
     } catch (error) {
-      run.status = signal.aborted ? "cancelled" : "failed";
-      run.error = signal.aborted ? "任务已取消，已有证据和记录已保留。" : error.message;
+      const cancelled = signal.aborted && !finalizing.has(run.id);
+      run.status = cancelled ? "cancelled" : "failed";
+      run.error = cancelled ? "任务已取消，已有证据和已收到的模型记录已保留；未返回的用量仍为未知。" : error.message;
+      if (error.returnedOutput) captureOutput(run, error.returnedOutput);
       if (error.raw) run.raw.failedModel = error.raw;
-      if (error.usage) run.usage = error.usage;
+      if (error.usage && !run.raw.foundryReceipt?.usage) run.usage = error.usage;
+      if (cancelled) { run.result = null; delete run.prototype; }
       run.completedAt = now(); await event(run, run.error);
     } finally {
       try {
         await eventWrites.get(run.id)?.catch(() => {});
+        run.cancellationPending = false;
         await store.put("agent-run", run);
       } finally {
         controllers.delete(run.id); projectLocks.delete(run.projectId);
         eventWrites.delete(run.id);
+        activeRuns.delete(run.id); finalizing.delete(run.id);
       }
     }
   }
@@ -290,11 +342,12 @@ export async function createAgentRouter({ store, settings, root, cloud, runner =
     const selectedHashes = new Map();
     const reusedAt = now();
     for (const id of [...new Set(input.sourceIds)]) {
-      const valid = s => s.id === id && s.status === "fetched" && typeof s.text === "string" && s.text.length && typeof s.raw === "string" && /^[a-f0-9]{64}$/.test(s.sha256 || "") && createHash("sha256").update(s.raw).digest("hex") === s.sha256;
+      const valid = s => s.id === id && isUsableEvidence(s);
       const matches = all.filter(r => r.projectId === input.projectId && r.sources?.some(valid));
-      if (!matches.length) throw Object.assign(new Error("只能复用本项目已读取成功的证据快照；来源不存在、读取失败或属于其他项目。"), { status: 400 });
+      const imported = await resolveImportedSource(store, input.projectId, id);
+      if (!matches.length && !imported) throw Object.assign(new Error("只能复用本项目已读取成功的证据快照或明确导入的资料；来源不存在、完整性校验失败或属于其他项目。"), { status: 400 });
       const original = matches.sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || ""))[0];
-      const source = structuredClone(original.sources.find(valid));
+      const source = imported || structuredClone(original.sources.find(valid));
       const canonical = normalizeUrl(source.url);
       if (seen.has(canonical)) {
         if (selectedHashes.get(canonical) !== source.sha256) throw new Error("同一地址的不同快照不能混用，请明确选择一个历史版本。");
@@ -302,10 +355,11 @@ export async function createAgentRouter({ store, settings, root, cloud, runner =
       }
       seen.add(canonical);
       selectedHashes.set(canonical, source.sha256);
-      const originalRunId = source.reusedFrom?.originalRunId || original.id;
-      source.reusedFrom = { runId: original.id, originalRunId, sourceId: source.id, fetchedAt: source.fetchedAt || null, sha256: source.sha256 || null };
+      const originalRunId = source.reusedFrom?.originalRunId || original?.id || null;
+      source.reusedFrom = { runId: original?.id || null, originalRunId, sourceId: source.id, sourceType: imported ? "project-source" : "agent-run", fetchedAt: source.fetchedAt || null, ...(imported ? { capturedAt: source.capturedAt } : {}), sha256: source.sha256 || null };
       source.reusedAt = reusedAt;
-      const age = source.fetchedAt ? (Date.parse(reusedAt) - Date.parse(source.fetchedAt)) / 1000 : NaN;
+      const timestamp = source.fetchedAt || source.capturedAt;
+      const age = timestamp ? (Date.parse(reusedAt) - Date.parse(timestamp)) / 1000 : NaN;
       source.ageAtReuseSeconds = Number.isFinite(age) ? Math.max(0, Math.floor(age)) : null;
       source.freshness = "saved-snapshot-not-refetched";
       sources.push(source);
@@ -363,14 +417,15 @@ export async function createAgentRouter({ store, settings, root, cloud, runner =
         createdAt: now(), parentRunId: input.parentRunId || null, idempotencyKey: key || null, requestHash,
         raw: { project: structuredClone(p), history, request: input, ...(prototypeBrief ? { prototypeBrief } : {}) },
       };
+      activeRuns.set(run.id, run);
       await store.put("agent-run", run);
       void execute(run, controller);
       return run;
-    } catch (error) { controllers.delete(runId); projectLocks.delete(p.id); throw error; }
+    } catch (error) { controllers.delete(runId); activeRuns.delete(runId); projectLocks.delete(p.id); throw error; }
     finally { if (key) pendingKeys.delete(key); }
   }
   router.post("/runs", async (req, res) => res.status(202).json(await start(req.body, req)));
-  router.get("/runs/:id", async (req, res) => { const run = await findRun(req.params.id); res.json({ ...run, claimAudit: await claimAudit.forRun(run) }); });
+  router.get("/runs/:id", async (req, res) => { const run = await findRun(req.params.id); res.json(projectRunActions({ ...run, ...(run.raw?.foundryRecovery ? { cancellationRecovery: { ...run.raw.foundryRecovery, projectId: run.raw.foundryReceipt?.projectId || null, versionId: run.raw.foundryReceipt?.versionId || null } } : {}), claimAudit: await claimAudit.forRun(run) })); });
   router.get("/runs/:id/claims", async (req, res) => res.json(await claimAudit.forRun(await findRun(req.params.id))));
   router.post("/runs/:id/claims/:key/review", async (req, res) => res.json(await claimAudit.review(req.params.id, req.params.key, req.body)));
   router.get("/runs/:id/requirements", async (req, res) => { const run = await findRun(req.params.id); res.json(projectRequirementBasis(run, await claimAudit.forRun(run))); });
@@ -387,28 +442,34 @@ export async function createAgentRouter({ store, settings, root, cloud, runner =
     res.status(202).json(await start({ ...input, projectId: parent.projectId, kind: "prototype", parentRunId: parent.id }, req));
   });
   router.post("/runs/:id/cancel", async (req, res) => {
-    const run = await findRun(req.params.id);
+    const saved = await findRun(req.params.id);
+    const run = activeRuns.get(saved.id) || saved;
+    if (finalizing.has(run.id)) return res.status(409).json({ error: "任务正在保存最终交付物，已进入不可取消的提交阶段。", code: "RUN_FINALIZING" });
     if (readyStatus.includes(run.status)) return res.json(run);
+    if (run.cancellationPending) return res.status(202).json(run);
+    run.cancelRequestedAt = now(); run.cancellationPending = true;
     controllers.get(run.id)?.abort();
-    run.status = "cancelled"; run.completedAt = now();
-    await store.put("agent-run", run); res.json(run);
+    await event(run, "正在取消并保存已收到的模型记录"); res.status(202).json(projectRunActions(run));
   });
-  router.patch("/runs/:id/actions/:actionId", async (req, res) => {
-    const validDate = value => { const date = new Date(value + "T00:00:00Z"); return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value; };
-    const change = z.object({ done: z.boolean().optional(), note: z.string().max(4000).optional(), dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(validDate).nullable().optional() }).refine(i => Object.keys(i).length > 0).parse(req.body);
+  router.get("/runs/:id/action-items", async (req, res) => res.json(projectActionItems(await findRun(req.params.id))));
+  async function editAction(req, res, stable) {
+    const input = (stable ? stableActionChangeSchema : actionChangeSchema).parse(req.body);
+    const { expectedActionFingerprint, ...change } = input;
     const id = req.params.id;
     const write = (actionWrites.get(id) || Promise.resolve()).catch(() => {}).then(async () => {
     const run = await findRun(id);
-    if (controllers.has(id)) throw Object.assign(new Error("任务正在保存最终记录，请稍后再更新待办。"), { status: 409 });
-    if (run.status !== "completed" || (run.kind && !["research", "recall"].includes(run.kind))) throw Object.assign(new Error("只能跟进已完成研究或回忆任务中的有效行动项。"), { status: 409 });
-      const matches = run.result?.actions?.filter(a => a.id === req.params.actionId) || [];
+    if (controllers.has(id)) throw Object.assign(new Error("任务正在保存最终记录，请稍后再更新待办。"), { status: 409, code: "RUN_SAVING" });
+    if (!actionEditable(run)) throw Object.assign(new Error("只能跟进已完成研究或回忆任务中的有效行动项。"), { status: 409, code: "ACTION_NOT_EDITABLE" });
+      const matches = stable ? [findActionByKey(run, req.params.key, expectedActionFingerprint)] : run.result?.actions?.filter(a => a.id === req.params.actionId) || [];
       if (!matches.length) throw Object.assign(new Error("待办不存在。"), { status: 404 });
       if (matches.length !== 1) throw Object.assign(new Error("行动项 ID 重复，无法安全定位，请核对原始结果。"), { status: 409 });
       Object.assign(matches[0], change, { updatedAt: now() }); await store.put("agent-run", run); return run;
     });
     actionWrites.set(id, write);
-    try { res.json(await write); } finally { if (actionWrites.get(id) === write) actionWrites.delete(id); }
-  });
+    try { res.json(projectRunActions(await write)); } finally { if (actionWrites.get(id) === write) actionWrites.delete(id); }
+  }
+  router.patch("/runs/:id/actions/:actionId", async (req, res) => editAction(req, res, false));
+  router.patch("/runs/:id/action-items/:key", async (req, res) => editAction(req, res, true));
   router.get("/runs/:id/export", async (req, res) => {
     const run = await findRun(req.params.id);
     const zip = new JSZip();
@@ -449,7 +510,7 @@ export async function createAgentRouter({ store, settings, root, cloud, runner =
     const zip = new JSZip();
     zip.file("index.html", run.prototype.code);
     zip.file("PRD.md", run.prototype.prd);
-    zip.file("manifest.json", JSON.stringify({ runId: run.id, parentRunId: run.parentRunId, version: run.prototype.version, sources: run.sources.map(({ id, url, sha256 }) => ({ id, url, sha256 })) }, null, 2));
+    zip.file("manifest.json", JSON.stringify({ runId: run.id, parentRunId: run.parentRunId, version: run.prototype.version, engine: run.engine || null, revision: run.raw?.revision || null, briefRole: run.raw?.revision?.inheritedGenerationBrief ? "original-model-generation-input; inherited by implementation revision" : run.raw?.prototypeBrief ? "model-generation-input" : "unavailable", sources: run.sources.map(({ id, url, sha256 }) => ({ id, url, sha256 })) }, null, 2));
     if (run.raw?.prototypeBrief) {
       zip.file("prototype-brief.json", JSON.stringify(run.raw.prototypeBrief, null, 2));
       if (run.raw.prototypeBrief.previousPrototypeSnapshot) zip.file("previous-version.html", run.raw.prototypeBrief.previousPrototypeSnapshot.code);

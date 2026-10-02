@@ -22,11 +22,13 @@ flowchart LR
 | 项目、任务与关联 | `server/agent-router.mjs` | 每个项目同时最多一个执行任务；提交支持幂等键 |
 | 记忆变更 | `server/project-memory.mjs` | 当前有效记忆与追加历史分开；expectedRevision 防止旧页面覆盖 |
 | 公开取证 | `server/evidence.mjs`、`runtime/search.py` | 搜索结果仅提供 URL，事实来自实际抓取正文 |
+| 明确导入资料 | `server/source-intake.mjs`、`src/LocalSources.tsx` | 白名单仓库 Git 文档对象或提交者文本；预览、指纹确认、项目隔离 |
+| 跟进与取消 | `server/action-items.mjs`、`src/TaskWorkspace.tsx` | 稳定 run+index 键，修改指纹；取消 pending 与最终提交边界分开 |
 | 主张摘录与审阅 | `server/claim-audit.mjs`、`src/ClaimReview.tsx` | 摘录匹配是文字校验；审阅另存历史，不能当作客观准确率 |
 | 需求论证与原型简报 | `server/requirement-basis.mjs`、`src/RequirementsWorkspace.tsx` | 显式数组索引关联；研究时依据与当前背景分开，生成时冻结 |
 | nanobot 运行 | `runtime/bridge.py`、`server/nanobot-runtime.mjs` | 固定上游版本；默认工具为空；调用原始记录私有保存 |
 | 模型与计量 | 两个仓库的 `server/provider.mjs` | 保存最终输出与公开运行事件，过滤推理事件；缺用量为 null |
-| 原型生成与版本 | 造物 `server/index.mjs`、`server/prompts.mjs` | 接收已存需求；输出独立 HTML 与 PRD |
+| 原型生成与版本 | 造物 `server/index.mjs`、`server/job-execution.mjs`、`server/prompts.mjs` | 接收已存需求；输出独立 HTML 与 PRD，返回计量先归档再发布版本 |
 | 评测 | `scripts/evaluate-agent.mjs` | 使用旧版提示与结构作基线；保存失败、补救、原文和复核记录 |
 
 ## API 入口
@@ -41,15 +43,19 @@ flowchart LR
 | `POST /projects/:id/memory` | 明确确认新记忆，需 expectedRevision 与 confirm:true |
 | `PATCH /projects/:id/memory/:memoryId` | 纠正或停用，需版本校验 |
 | `POST /projects/:id/memory/:memoryId/restore` | 指定历史版本并重新确认，追加恢复记录 |
+| `GET /projects/:id/sources`、`GET /projects/:id/sources/:sourceId` | 项目导入来源摘要与完整快照；不自动带入研究 |
+| `POST /projects/:id/sources/preview` | git-commit 的 repoId/relativePath 或 text-import 的 text/sourceLabel；预览不保存、不调用模型 |
+| `POST /projects/:id/sources` | 同预览输入加 confirm:true、expectedImportFingerprint；可记录 importerType/importerLabel |
 | `POST /runs` | 研究或回忆，返回任务后异步执行 |
-| `POST /runs` 的 `sourceIds` | 仅显式复用本项目的 SHA256 验证快照；不重新抓取 |
-| `GET /runs/:id`、`POST /runs/:id/cancel` | 状态、原始记录与取消 |
+| `POST /runs` 的 `sourceIds` | 仅显式复用本项目的 SHA256 验证网页快照或导入资料；不重新抓取 |
+| `GET /runs/:id`、`POST /runs/:id/cancel` | 状态、原始记录；取消202进入收尾，最终提交已开始则409，不假称已取消 |
 | `GET /runs/:id/claims` | 主张的原文匹配、定位、审阅状态与修订历史 |
 | `POST /runs/:id/claims/:key/review` | 需 expectedRevision、expectedClaimFingerprint、confirm:true；支持或反驳需有效引文和理由 |
 | `GET /runs/:id/requirements` | 按显式关联查看需求、主张、项目字段、记忆和行动；旧数据不推测关系 |
 | `POST /runs/:id/prototype/brief-preview` | 预览 requirementIndices 范围、当前与研究时背景、审阅及输入覆盖，返回指纹 |
 | `POST /runs/:id/prototype` | requirementIndices 选择范围；新界面带 expectedBriefFingerprint 核对预览；prototypeMode 区分新建／扩展 |
 | `PATCH /runs/:id/actions/:actionId` | 串行保存完成状态、dueDate（YYYY-MM-DD/null）与 note |
+| `GET /runs/:id/action-items`、`PATCH /runs/:id/action-items/:key` | 按稳定键定位，即使模型 ID 重复；修改携 expectedActionFingerprint；旧 ID 接口仅兼容唯一匹配 |
 | `GET /runs/:id/export` | 研究记录、模型调用与证据快照包 |
 | `GET /prototypes/:id/download` | 原型源码、需求和来源清单 |
 | `GET /evaluations/:id/export` | 评测及配对样本原始记录 |
@@ -75,4 +81,4 @@ Node 依赖通过 `package-lock.json` 与 `npm ci` 复现。Python 上游提交�
 
 没有引入自动技能晋升、任意 Shell、多人账号或自动公开发布。它们需要另外的效果评测、授权与运行设计，不能从这一版演示推出已经具备。
 
-本机版本归档可在工作树保存后运行 `node scripts/package-delivery.mjs --output ../deliverables/版本目录 --iteration 迭代档案ID`。脚本只从干净的本机提交收集两个源码项目，另行打包指定的历史评测和迭代验收。它不会上传或发布 GitHub，也不会在源码 ZIP 中带入凭证、数据库或运行环境。
+本机版本归档可在工作树保存后运行 `node scripts/package-delivery.mjs --output ../deliverables/版本目录 --iteration 迭代档案ID --notes docs/ITERATION_V05.md`，并把 `--notes` 改为该版本的说明文件。脚本默认说明仍为最初的 v0.2 归档说明，不能省略后误认为自动匹配当前版本。脚本只从干净的本机提交收集两个源码项目，另行打包指定的历史评测和迭代验收。它不会上传或发布 GitHub，也不会在源码 ZIP 中带入凭证、数据库或运行环境。

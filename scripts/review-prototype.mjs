@@ -1,4 +1,4 @@
-// Save a human-reviewed HTML revision without pretending to make an AI call.
+// Save an implementation-reviewed HTML revision without a new model call.
 import { readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -35,7 +35,10 @@ try {
     result: { ...original.result, answer: "已保存人工验收修正版。" + changeNote },
     engine: { name: "implementation-review", provider: "manual" },
     usage: { inputTokens: null, outputTokens: null, cachedTokens: null, requestCount: 0, reported: false, cost: null, currency: null, note: "人工验收修正没有追加模型调用；开发人力成本未计价。" },
-    raw: { project: original.raw.project, revision: { method: "implementation-review", previousRunId: original.id,
+    raw: { project: original.raw.project,
+      ...(original.raw.prototypeBrief ? { prototypeBrief: structuredClone(original.raw.prototypeBrief) } : {}),
+      revision: { method: "implementation-review", reviewerType: "agent-assisted", previousRunId: original.id,
+      inheritedGenerationBrief: !!original.raw.prototypeBrief, generationBriefRole: "original-model-generation-input; not a new manual-revision model call",
       originalVersionId: previous.id, note: changeNote, htmlSha256: createHash("sha256").update(code).digest("hex") } },
     prototype: { ...original.prototype, title: version.title, code, prd: version.prd,
       versionId: version.id, version: project.versions.length, createdAt: at } };

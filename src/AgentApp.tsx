@@ -4,6 +4,8 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { ClaimCitation } from "./ClaimReview";
 import type { PrototypeBrief, PrototypeRequest } from "./RequirementsWorkspace";
+import type { TaskAction } from "./TaskWorkspace";
+import type { ImportedSource } from "./LocalSources";
 import {
   ArrowDownToLine,
   ArrowLeft,
@@ -52,6 +54,8 @@ import {
 import "./agent.css";
 const ClaimReview = lazy(() => import("./ClaimReview"));
 const RequirementsWorkspace = lazy(() => import("./RequirementsWorkspace"));
+const TaskWorkspace = lazy(() => import("./TaskWorkspace"));
+const LocalSources = lazy(() => import("./LocalSources"));
 const PrototypeBriefDetails = lazy(() =>
   import("./RequirementsWorkspace").then((module) => ({
     default: module.PrototypeBriefDetails,
@@ -105,7 +109,7 @@ type Source = {
   url: string;
   text?: string;
   sha256: string;
-  fetchedAt: string;
+  fetchedAt: string | null;
   status: string;
   preview?: string;
   reusedFrom?: {
@@ -118,12 +122,14 @@ type Source = {
   reusedAt?: string;
   ageAtReuseSeconds?: number;
   truncated?: boolean;
+  capturedAt?: string;
+  origin?: ImportedSource["origin"];
   extraction?: {
-    method: string;
-    format: string;
+    method?: string;
+    format?: string;
     providedChars: number;
     extractedChars: number;
-    offsetUnit: string;
+    offsetUnit?: string;
     transformed?: boolean;
     htmlMarkupRemoved?: boolean;
     note?: string;
@@ -136,14 +142,12 @@ type Requirement = {
   sourceIds: string[];
   acceptance: string | string[];
 };
-type Action = {
-  id: string;
-  title: string;
-  done: boolean;
-  dueDate?: string | null;
+type Action = TaskAction;
+type CancellationRecovery = {
+  upstreamOutcome?: string;
   note?: string;
-  sourceIds?: string[];
-  requirementIndices?: number[];
+  projectId?: string;
+  versionId?: string;
 };
 type Run = {
   id: string;
@@ -169,6 +173,7 @@ type Run = {
     outputTokens?: number;
     cachedTokens?: number;
     cost: number | null;
+    note?: string;
   };
   prototype?: {
     projectId: string;
@@ -183,7 +188,13 @@ type Run = {
   completedAt?: string;
   updatedAt?: string;
   detailAvailable?: boolean;
-  raw?: { prototypeBrief?: PrototypeBrief };
+  raw?: {
+    prototypeBrief?: PrototypeBrief;
+    foundryRecovery?: CancellationRecovery;
+  };
+  cancellationPending?: boolean;
+  cancelRequestedAt?: string;
+  cancellationRecovery?: CancellationRecovery;
 };
 type Evaluation = {
   id: string;
@@ -287,9 +298,12 @@ const kindLabels: Record<string, string> = {
   recall: "记忆回顾",
 };
 function isBusy(run?: Run) {
-  return !!run && ["queued", "running"].includes(run.status);
+  return (
+    !!run &&
+    (["queued", "running"].includes(run.status) || !!run.cancellationPending)
+  );
 }
-function date(value?: string, short = false) {
+function date(value?: string | null, short = false) {
   return value
     ? new Date(value).toLocaleString("zh-CN", {
         month: "2-digit",
@@ -299,7 +313,7 @@ function date(value?: string, short = false) {
       })
     : "—";
 }
-function age(value?: string) {
+function age(value?: string | null) {
   if (!value || !Number.isFinite(Date.parse(value))) return "时间未记录";
   const hours = Math.max(
     0,
@@ -311,6 +325,18 @@ function age(value?: string) {
       ? `${hours} 小时前`
       : `${Math.floor(hours / 24)} 天前`;
 }
+function sourceTimestamp(source: Source) {
+  return source.status === "imported" || source.origin
+    ? source.capturedAt || source.fetchedAt
+    : source.fetchedAt;
+}
+function sourceProvenance(source: Source) {
+  return source.origin?.kind === "git-commit"
+    ? "固定提交文档"
+    : source.origin?.kind === "text-import"
+      ? "提交者文本"
+      : "网页快照";
+}
 function runFingerprint(run?: Run) {
   if (!run) return "";
   return JSON.stringify([
@@ -320,6 +346,9 @@ function runFingerprint(run?: Run) {
     run.stage,
     run.events?.length,
     run.result?.actions,
+    run.cancellationPending,
+    run.cancelRequestedAt,
+    run.usage,
     run.sources?.map((s) => [s.id, s.sha256, s.status]),
   ]);
 }
@@ -379,7 +408,7 @@ function Status({ run }: { run: Run }) {
       ) : (
         <Circle size={10} />
       )}
-      {labels[run.status]}
+      {run.cancellationPending ? "正在取消" : labels[run.status]}
     </span>
   );
 }
@@ -456,6 +485,29 @@ export default function AgentApp() {
   });
   const [detailReload, setDetailReload] = useState(0);
   const [claimAuditRefresh, setClaimAuditRefresh] = useState(0);
+  const [cancelStates, setCancelStates] = useState<
+    Record<string, { loading: boolean; error: string }>
+  >({});
+  const [importedSources, setImportedSources] = useState<{
+    projectId: string;
+    sources: ImportedSource[];
+  }>({ projectId: "", sources: [] });
+  const [importedDetails, setImportedDetails] = useState<
+    Record<string, ImportedSource>
+  >({});
+  const [importedListState, setImportedListState] = useState({
+    projectId: "",
+    loading: false,
+    error: "",
+  });
+  const [importedDetailState, setImportedDetailState] = useState({
+    key: "",
+    loading: false,
+    error: "",
+  });
+  const [importedReload, setImportedReload] = useState(0);
+  const runMutationSequence = useRef(0),
+    runMutationEpochs = useRef<Record<string, number>>({});
   const composer = useRef<HTMLTextAreaElement>(null),
     contentRef = useRef<HTMLElement>(null),
     quoteMark = useRef<HTMLElement>(null);
@@ -480,9 +532,25 @@ export default function AgentApp() {
     return data;
   }
   async function refresh(initial = false) {
+    const startedAtEpoch = runMutationSequence.current;
     try {
       const data: Boot = await api("/agent/bootstrap");
-      setBoot(data);
+      setBoot((current) => {
+        const recent = (current?.runs || []).filter(
+          (run) => (runMutationEpochs.current[run.id] || 0) > startedAtEpoch,
+        );
+        return recent.length
+          ? {
+              ...data,
+              runs: [
+                ...recent,
+                ...data.runs.filter(
+                  (run) => !recent.some((saved) => saved.id === run.id),
+                ),
+              ],
+            }
+          : data;
+      });
       setLocked(false);
       setError("");
       if (initial) readHash(data);
@@ -491,6 +559,22 @@ export default function AgentApp() {
     } finally {
       setLoading(false);
     }
+  }
+  function mergeRun(run: Run) {
+    if (!run?.id || !run.projectId) return;
+    runMutationEpochs.current[run.id] = ++runMutationSequence.current;
+    setBoot((current) =>
+      current
+        ? {
+            ...current,
+            runs: [run, ...current.runs.filter((item) => item.id !== run.id)],
+          }
+        : current,
+    );
+    setRunDetails((current) => ({
+      ...current,
+      [run.id]: { fingerprint: runFingerprint(run), run },
+    }));
   }
   function readHash(data: Boot) {
     const hash = new URLSearchParams(location.hash.slice(1));
@@ -520,7 +604,10 @@ export default function AgentApp() {
     const nextSource =
       projectRuns
         .flatMap((r) => (r.sources || []).map((s) => `${r.id}:${s.id}`))
-        .find((key) => key === hash.get("source")) || "";
+        .find((key) => key === hash.get("source")) ||
+      (/^import:[a-zA-Z0-9_-]{1,100}$/.test(hash.get("source") || "")
+        ? hash.get("source")!
+        : "");
     setProjectId(selected);
     setPage(validPage);
     setRunId(nextRun);
@@ -646,9 +733,20 @@ export default function AgentApp() {
       : runs.find((r) => r.id === runId && r.kind !== "prototype") ||
         runs.find((r) => r.kind === "research" && r.status === "completed") ||
         runs.find((r) => r.kind !== "prototype");
-  const sources = useMemo(
-    () =>
-      runs
+  const sources = useMemo<SourceRef[]>(
+    () => [
+      ...(importedSources.projectId === project?.id
+        ? importedSources.sources
+        : []
+      ).map((source) => {
+        const detail = importedDetails[`${project!.id}:${source.id}`];
+        return {
+          ...(detail?.sha256 === source.sha256 ? detail : source),
+          runId: "",
+          key: `import:${source.id}`,
+        };
+      }),
+      ...runs
         .filter((r) => r.kind !== "prototype")
         .flatMap((r) =>
           (r.sources || []).map((s) => ({
@@ -657,7 +755,8 @@ export default function AgentApp() {
             key: `${r.id}:${s.id}`,
           })),
         ),
-    [runs],
+    ],
+    [runs, project?.id, importedSources, importedDetails],
   );
   const requirements = runs
     .filter((r) => r.kind !== "prototype" && r.status === "completed")
@@ -670,7 +769,96 @@ export default function AgentApp() {
   const prototypes = runs.filter((r) => r.prototype);
   const selectedPrototype =
     prototypes.find((r) => r.id === runId) || prototypes[0];
-  const selectedSource = sources.find((s) => s.key === sourceKey) || sources[0];
+  const selectedSource =
+    sources.find((s) => s.key === sourceKey) ||
+    (sourceKey.startsWith("import:") ? undefined : sources[0]);
+  const needsImportedSources = page === "evidence" || page === "research";
+  useEffect(() => {
+    if (!project?.id || !needsImportedSources) return;
+    const id = project.id;
+    const controller = new AbortController();
+    setImportedListState({ projectId: id, loading: true, error: "" });
+    void api(`/agent/projects/${encodeURIComponent(id)}/sources`, {
+      signal: controller.signal,
+    })
+      .then((data: { projectId: string; sources: ImportedSource[] }) => {
+        if (controller.signal.aborted) return;
+        if (data.projectId !== id)
+          throw new Error("项目资料与当前项目不一致。");
+        setImportedSources((current) => ({
+          projectId: id,
+          sources: [
+            ...data.sources,
+            ...(current.projectId === id
+              ? current.sources.filter(
+                  (source) =>
+                    !data.sources.some((saved) => saved.id === source.id),
+                )
+              : []),
+          ],
+        }));
+        setImportedListState({ projectId: id, loading: false, error: "" });
+      })
+      .catch((e) => {
+        if (!controller.signal.aborted)
+          setImportedListState({
+            projectId: id,
+            loading: false,
+            error: (e as Error).message,
+          });
+      });
+    return () => controller.abort();
+  }, [project?.id, needsImportedSources, importedReload]);
+  useEffect(() => {
+    if (
+      page !== "evidence" ||
+      !selectedSource ||
+      selectedSource.runId ||
+      typeof selectedSource.text === "string" ||
+      !project?.id
+    )
+      return;
+    const controller = new AbortController();
+    const id = project.id,
+      key = selectedSource.key,
+      sourceId = selectedSource.id,
+      expectedSha256 = selectedSource.sha256;
+    setImportedDetailState({ key, loading: true, error: "" });
+    void api(
+      `/agent/projects/${encodeURIComponent(id)}/sources/${encodeURIComponent(sourceId)}`,
+      { signal: controller.signal },
+    )
+      .then((source: ImportedSource) => {
+        if (controller.signal.aborted) return;
+        if (
+          source.projectId !== id ||
+          source.id !== sourceId ||
+          source.sha256 !== expectedSha256
+        )
+          throw new Error("资料详情与当前选择不一致。");
+        setImportedDetails((cache) => ({
+          ...cache,
+          [`${id}:${sourceId}`]: source,
+        }));
+        setImportedDetailState({ key, loading: false, error: "" });
+      })
+      .catch((e) => {
+        if (!controller.signal.aborted)
+          setImportedDetailState({
+            key,
+            loading: false,
+            error: (e as Error).message,
+          });
+      });
+    return () => controller.abort();
+  }, [
+    page,
+    project?.id,
+    selectedSource?.key,
+    selectedSource?.sha256,
+    typeof selectedSource?.text,
+    importedReload,
+  ]);
   useEffect(() => {
     if (
       page !== "evidence" ||
@@ -913,6 +1101,41 @@ export default function AgentApp() {
       )
     );
   }
+  function rememberImported(source: ImportedSource) {
+    if (!project || (source.projectId && source.projectId !== project.id))
+      return;
+    const id = project.id;
+    setImportedSources((current) => ({
+      projectId: id,
+      sources: [
+        source,
+        ...(current.projectId === id
+          ? current.sources.filter((item) => item.id !== source.id)
+          : []),
+      ],
+    }));
+    if (typeof source.text === "string")
+      setImportedDetails((current) => ({
+        ...current,
+        [`${id}:${source.id}`]: source,
+      }));
+  }
+  function openImported(source: ImportedSource) {
+    rememberImported(source);
+    setSourceKey(`import:${source.id}`);
+    setQuoteLocation(null);
+    navigate("evidence", "");
+  }
+  function researchImported(source: ImportedSource) {
+    rememberImported(source);
+    seed(
+      `结合当前项目背景，研究已导入资料「${source.title}」中值得采用的机制与需求。请区分资料原文声明、产品价值推断和仍需验证的事项；固定提交文档或提交者文本不能代表当前网络现状。`,
+    );
+    setSelectedSourceIds([source.id]);
+    setShowSources(true);
+    setSessionId(crypto.randomUUID());
+    setToast("项目资料已带入研究草稿，确认后才会调用模型。");
+  }
   async function submit(kind: "research" | "recall" = "research") {
     if (!project || !prompt.trim() || submitting) return;
     if (prompt.trim().length < 5) {
@@ -985,12 +1208,39 @@ export default function AgentApp() {
     }
   }
   async function cancel(run: Run) {
+    if (run.cancellationPending || cancelStates[run.id]?.loading) return;
+    setCancelStates((current) => ({
+      ...current,
+      [run.id]: { loading: true, error: "" },
+    }));
     try {
-      await api(`/agent/runs/${run.id}/cancel`, { method: "POST" });
-      await refresh();
-      setToast("已发送取消请求，已保存的证据和记录会保留");
+      const canonical: Run = await api(`/agent/runs/${run.id}/cancel`, {
+        method: "POST",
+      });
+      mergeRun(canonical);
+      setToast(
+        canonical.cancellationPending
+          ? "取消请求已发送，等待执行停止和记录保存。"
+          : canonical.status === "cancelled"
+            ? "任务已取消，已保存的记录可以继续查看。"
+            : "任务状态已更新，请查看最终记录。",
+      );
     } catch (e) {
-      setError((e as Error).message);
+      const failure = e as Error & { code?: string };
+      const message =
+        failure.code === "RUN_FINALIZING"
+          ? "任务正在保存最终记录，当前不可取消；请等待最终状态。"
+          : failure.message;
+      setCancelStates((current) => ({
+        ...current,
+        [run.id]: { loading: false, error: message },
+      }));
+      return;
+    } finally {
+      setCancelStates((current) => ({
+        ...current,
+        [run.id]: { loading: false, error: current[run.id]?.error || "" },
+      }));
     }
   }
   async function generatePrototype(
@@ -1022,28 +1272,6 @@ export default function AgentApp() {
     } finally {
       setSubmitting(false);
     }
-  }
-  async function toggleAction(action: Action & { run: Run }) {
-    try {
-      await api(`/agent/runs/${action.run.id}/actions/${action.id}`, {
-        method: "PATCH",
-        body: JSON.stringify({ done: !action.done }),
-      });
-      await refresh();
-    } catch (e) {
-      setError((e as Error).message);
-    }
-  }
-  async function saveAction(
-    action: Action & { run: Run },
-    update: { note: string; dueDate: string | null },
-  ) {
-    await api(`/agent/runs/${action.run.id}/actions/${action.id}`, {
-      method: "PATCH",
-      body: JSON.stringify(update),
-    });
-    await refresh();
-    setToast("跟进日期与记录已保存");
   }
   function followUp(action: Action & { run: Run }) {
     seed(
@@ -1106,21 +1334,45 @@ export default function AgentApp() {
   }
   function runFooter(run: Run) {
     return (
-      <div className="ag-run-footer">
-        <span>
-          <Terminal size={13} />
-          {num(run.usage?.inputTokens)} 输入 · {num(run.usage?.outputTokens)}{" "}
-          输出 Token
-        </span>
-        <span>
-          {run.usage?.cost == null ? "费用未计价" : `${run.usage.cost} 元`}
-        </span>
-        <a href={`/api/agent/runs/${run.id}/export`}>
-          <ArrowDownToLine size={13} />
-          导出原始记录
-        </a>
-      </div>
+      <>
+        <div className="ag-run-footer">
+          <span>
+            <Terminal size={13} />
+            {num(run.usage?.inputTokens)} 输入 · {num(run.usage?.outputTokens)}{" "}
+            输出 Token
+          </span>
+          <span>
+            {run.usage?.cost == null ? "费用未计价" : `${run.usage.cost} 元`}
+          </span>
+          <a href={`/api/agent/runs/${run.id}/export`}>
+            <ArrowDownToLine size={13} />
+            导出原始记录
+          </a>
+        </div>
+        {(["failed", "cancelled"].includes(run.status) ||
+          run.cancellationPending) &&
+          run.usage?.note && <p className="ag-usage-note">{run.usage.note}</p>}
+      </>
     );
+  }
+  function cancellationNotice(run: Run) {
+    const recovery = run.cancellationRecovery || run.raw?.foundryRecovery;
+    return recovery?.upstreamOutcome === "completed-after-cancel-request" ? (
+      <div className="ag-cancellation-recovery">
+        <AlertCircle size={15} />
+        <div>
+          <b>上游原型已保存，需要核对</b>
+          <p>
+            取消请求之后，造物仍完成了远端版本保存。主任务保持取消状态；已发生的调用量和恢复记录会保留，不会视为本次成功交付。
+            {recovery.note}
+          </p>
+          <a href={`/api/agent/runs/${run.id}/export`}>
+            查看上游版本与计量记录
+            <ArrowUpRight size={12} />
+          </a>
+        </div>
+      </div>
+    ) : null;
   }
 
   if (loading)
@@ -1217,20 +1469,42 @@ export default function AgentApp() {
           </span>
           <div>
             <b>
-              {run.kind === "prototype"
-                ? "造物正在制作原型"
-                : "亦伴正在推进研究"}
+              {run.cancellationPending
+                ? "正在等待任务停止与记录保存"
+                : run.kind === "prototype"
+                  ? "造物正在制作原型"
+                  : "亦伴正在推进研究"}
             </b>
             <small>{run.stage || "准备任务上下文"}</small>
           </div>
           <button
             className="ag-button ghost small"
             onClick={() => void cancel(run)}
+            disabled={run.cancellationPending || cancelStates[run.id]?.loading}
           >
-            <Square size={12} />
-            取消任务
+            {run.cancellationPending || cancelStates[run.id]?.loading ? (
+              <Loader2 size={12} className="ag-spin" />
+            ) : (
+              <Square size={12} />
+            )}
+            {run.cancellationPending
+              ? "正在取消"
+              : cancelStates[run.id]?.loading
+                ? "发送取消请求"
+                : "取消任务"}
           </button>
         </div>
+        {run.cancellationPending && (
+          <p className="ag-cancel-pending-note">
+            已在 {date(run.cancelRequestedAt)}{" "}
+            请求取消。结束状态尚未确认，页面会继续更新日志和已记录用量。
+          </p>
+        )}
+        {cancelStates[run.id]?.error && (
+          <p className="ag-field-error ag-cancel-error" role="alert">
+            {cancelStates[run.id].error}
+          </p>
+        )}
         <div className="ag-progress-steps">
           {(run.events || []).slice(-6).map((event, i) => (
             <div key={`${event.at}-${i}`}>
@@ -1241,6 +1515,7 @@ export default function AgentApp() {
           ))}
           {!run.events?.length && <p>任务已提交，等待运行器开始执行。</p>}
         </div>
+        {run.cancellationPending && runFooter(run)}
       </div>
     );
   }
@@ -1294,7 +1569,7 @@ export default function AgentApp() {
             <b>亦伴</b>
             <small>PERSONAL PRODUCT AGENT</small>
           </span>
-          <span className="ag-brand-version">04</span>
+          <span className="ag-brand-version">05</span>
         </a>
         <div className="ag-project-select">
           <button
@@ -1989,12 +2264,14 @@ export default function AgentApp() {
                                     )}
                                   </section>
                                 )}
-                                {selectedRun.status === "cancelled" && (
-                                  <div className="ag-note">
-                                    <Square size={14} />
-                                    任务已取消。已抓取的来源和过程记录可以继续查看。
-                                  </div>
-                                )}
+                                {selectedRun.status === "cancelled" &&
+                                  !selectedRun.cancellationPending && (
+                                    <div className="ag-note">
+                                      <Square size={14} />
+                                      任务已取消。已抓取的来源和过程记录可以继续查看。
+                                    </div>
+                                  )}
+                                {cancellationNotice(selectedRun)}
                                 {selectedRun.status === "completed" &&
                                   !detailState.loading &&
                                   !detailState.error &&
@@ -2105,7 +2382,7 @@ export default function AgentApp() {
                                   <span>{selectedSourceIds.length} 已选</span>
                                 </div>
                                 <p>
-                                  读取已存原文，不会重新访问网页。抓取时间可能影响结论，请明确哪些信息需要重新核实。
+                                  读取已存原文与项目资料，不会重新访问网页。导入文本的出处需核对，历史网页的时效也需单独验证。
                                 </p>
                                 <div className="ag-reuse-list">
                                   {reusableSources.map((s) => (
@@ -2140,12 +2417,20 @@ export default function AgentApp() {
                                       <span>
                                         <b>{s.title || s.url}</b>
                                         <small>
-                                          抓取 {date(s.fetchedAt)} ·{" "}
-                                          {age(s.fetchedAt)} · {domain(s.url)}
+                                          {s.origin || s.status === "imported"
+                                            ? "本机导入"
+                                            : "抓取"}{" "}
+                                          {date(sourceTimestamp(s))} ·{" "}
+                                          {age(sourceTimestamp(s))} ·{" "}
+                                          {sourceProvenance(s)}
                                         </small>
                                         <small>
                                           SHA256 {s.sha256.slice(0, 12)} ·
-                                          来自研究 {s.runId.slice(0, 8)}
+                                          {s.runId
+                                            ? `来自研究 ${s.runId.slice(0, 8)}`
+                                            : s.origin?.kind === "git-commit"
+                                              ? `提交 ${s.origin.commit?.slice(0, 12)}`
+                                              : "项目资料"}
                                           {s.reusedFrom ? " · 曾被复用" : ""}
                                         </small>
                                       </span>
@@ -2259,16 +2544,70 @@ export default function AgentApp() {
                     "TRACE EVERY CLAIM",
                     "证据库",
                     "保存来源与原文。回到证据，才能检验结论。",
-                    selectedRun && (
+                    selectedSource?.key.startsWith("import:") ? (
                       <a
                         className="ag-button light"
-                        href={`/api/agent/runs/${selectedRun.id}/export`}
+                        href={`/api/agent/projects/${encodeURIComponent(project?.id || projectId)}/sources/${encodeURIComponent(selectedSource.id)}`}
+                        download={`${(selectedSource.title || "项目资料").replace(/[\\/]/g, "-").slice(0, 70)}.json`}
                       >
                         <ArrowDownToLine size={14} />
-                        导出证据与记录
+                        导出资料存档
                       </a>
+                    ) : (
+                      selectedSource?.runId && (
+                        <a
+                          className="ag-button light"
+                          href={`/api/agent/runs/${selectedSource.runId}/export`}
+                        >
+                          <ArrowDownToLine size={14} />
+                          导出证据与记录
+                        </a>
+                      )
                     ),
                   )}
+                  {project && (
+                    <Suspense
+                      fallback={
+                        <div className="ag-detail-notice">
+                          正在加载项目资料导入…
+                        </div>
+                      }
+                    >
+                      <LocalSources
+                        key={project.id}
+                        projectId={project.id}
+                        onImported={rememberImported}
+                        onOpen={openImported}
+                        onResearch={researchImported}
+                      />
+                    </Suspense>
+                  )}
+                  {importedListState.projectId === project?.id &&
+                    (importedListState.loading || importedListState.error) && (
+                      <div
+                        className={`ag-detail-notice ${importedListState.error ? "error" : ""}`}
+                      >
+                        {importedListState.loading ? (
+                          <Loader2 size={14} className="ag-spin" />
+                        ) : (
+                          <AlertCircle size={14} />
+                        )}
+                        <span>
+                          {importedListState.loading
+                            ? "正在读取可引用的项目资料…"
+                            : importedListState.error}
+                        </span>
+                        {importedListState.error && (
+                          <button
+                            onClick={() =>
+                              setImportedReload((value) => value + 1)
+                            }
+                          >
+                            重试
+                          </button>
+                        )}
+                      </div>
+                    )}
                   {sources.length ? (
                     <div className="ag-evidence-grid">
                       <div className="ag-source-list">
@@ -2289,9 +2628,11 @@ export default function AgentApp() {
                             <div>
                               <span className="ag-source-domain">
                                 <span>
-                                  {domain(s.url).slice(0, 1).toUpperCase()}
+                                  {s.origin
+                                    ? "项"
+                                    : domain(s.url).slice(0, 1).toUpperCase()}
                                 </span>
-                                {domain(s.url)}
+                                {s.origin ? sourceProvenance(s) : domain(s.url)}
                               </span>
                               <span className={`ag-source-state ${s.status}`}>
                                 {s.status === "failed"
@@ -2299,7 +2640,9 @@ export default function AgentApp() {
                                   : s.status === "fetched" ||
                                       s.status === "success"
                                     ? "已存档"
-                                    : s.status || "已记录"}
+                                    : s.status === "imported"
+                                      ? "已导入"
+                                      : s.status || "已记录"}
                               </span>
                             </div>
                             <b>{s.title || s.url}</b>
@@ -2311,7 +2654,7 @@ export default function AgentApp() {
                                   : "已存原文，点击读取保存的证据正文。")}
                             </p>
                             <small>
-                              {date(s.fetchedAt)}
+                              {date(sourceTimestamp(s))}
                               <ChevronRight size={13} />
                             </small>
                           </button>
@@ -2323,28 +2666,47 @@ export default function AgentApp() {
                             <span>来源原文</span>
                             <button
                               className="ag-text-button"
-                              onClick={() =>
-                                navigate("research", selectedSource.runId)
-                              }
+                              onClick={() => {
+                                if (selectedSource.runId)
+                                  navigate("research", selectedSource.runId);
+                                else {
+                                  const source = importedSources.sources.find(
+                                    (item) => item.id === selectedSource.id,
+                                  );
+                                  if (source) researchImported(source);
+                                }
+                              }}
                             >
-                              回到相关研究
+                              {selectedSource.runId
+                                ? "回到相关研究"
+                                : "带入新的研究"}
                               <ArrowUpRight size={13} />
                             </button>
                           </div>
                           <h2>{selectedSource.title || "未命名来源"}</h2>
-                          <a
-                            className="ag-source-url"
-                            href={selectedSource.url}
-                            target="_blank"
-                            rel="noreferrer"
-                          >
-                            {selectedSource.url}
-                            <ExternalLink size={14} />
-                          </a>
+                          {/^https?:\/\//.test(selectedSource.url) ? (
+                            <a
+                              className="ag-source-url"
+                              href={selectedSource.url}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              {selectedSource.url}
+                              <ExternalLink size={14} />
+                            </a>
+                          ) : (
+                            <span className="ag-source-url">
+                              本机项目资料 · {sourceProvenance(selectedSource)}
+                            </span>
+                          )}
                           <div className="ag-evidence-meta">
                             <span>
                               <Clock3 size={13} />
-                              抓取于 {date(selectedSource.fetchedAt)}
+                              {selectedSource.origin ||
+                              selectedSource.status === "imported"
+                                ? "本机导入于"
+                                : "抓取于"}{" "}
+                              {date(sourceTimestamp(selectedSource))}
                             </span>
                             <span title={selectedSource.sha256 || "未记录摘要"}>
                               SHA256{" "}
@@ -2355,14 +2717,33 @@ export default function AgentApp() {
                             <History size={15} />
                             <div>
                               <b>
-                                {selectedSource.reusedFrom
-                                  ? "复用的历史证据"
-                                  : "已保存的网页快照"}
+                                {selectedSource.origin
+                                  ? sourceProvenance(selectedSource)
+                                  : selectedSource.reusedFrom
+                                    ? "复用的历史证据"
+                                    : "已保存的网页快照"}
                               </b>
                               <p>
-                                抓取距今 {age(selectedSource.fetchedAt)}
-                                。保存的内容代表当时页面，不等于当前页面已重新验证。
+                                {selectedSource.origin
+                                  ? `本机导入距今 ${age(sourceTimestamp(selectedSource))}。${selectedSource.origin.note}`
+                                  : `抓取距今 ${age(selectedSource.fetchedAt)}。保存的内容代表当时页面，不等于当前页面已重新验证。`}
                               </p>
+                              {selectedSource.origin?.kind === "git-commit" && (
+                                <p>
+                                  固定提交 {selectedSource.origin.commit} ·{" "}
+                                  {selectedSource.origin.relativePath}
+                                  。未提交的工作区修改不在本资料中。
+                                </p>
+                              )}
+                              {selectedSource.origin?.kind ===
+                                "text-import" && (
+                                <p>
+                                  文本出处：
+                                  {selectedSource.origin.sourceLabel ||
+                                    "提交者提供"}
+                                  。出处说明由提交者填写，未独立核验作者与真实性。
+                                </p>
+                              )}
                               {selectedSource.reusedFrom && (
                                 <p>
                                   原始研究{" "}
@@ -2387,7 +2768,7 @@ export default function AgentApp() {
                                     : ""}
                                   。
                                   {selectedSource.extraction.note ||
-                                    "提取正文不代表已覆盖页面的全部内容。"}
+                                    "提取正文不代表已覆盖来源的全部内容。"}
                                 </p>
                               ) : selectedSource.truncated ? (
                                 <p>
@@ -2397,7 +2778,30 @@ export default function AgentApp() {
                               ) : null}
                             </div>
                           </div>
-                          {detailNotice()}
+                          {selectedSource.runId ? (
+                            detailNotice()
+                          ) : importedDetailState.key === selectedSource.key &&
+                            (importedDetailState.loading ||
+                              importedDetailState.error) ? (
+                            <div
+                              className={`ag-detail-notice ${importedDetailState.error ? "error" : ""}`}
+                            >
+                              <span>
+                                {importedDetailState.loading
+                                  ? "正在读取本次资料的已存正文…"
+                                  : importedDetailState.error}
+                              </span>
+                              {importedDetailState.error && (
+                                <button
+                                  onClick={() =>
+                                    setImportedReload((value) => value + 1)
+                                  }
+                                >
+                                  重新读取
+                                </button>
+                              )}
+                            </div>
+                          ) : null}
                           {selectedSource.status === "failed" && (
                             <div className="ag-inline-error">
                               <AlertCircle size={17} />
@@ -2583,18 +2987,28 @@ export default function AgentApp() {
                     ))}
                   {runs
                     .filter(
-                      (r) => r.kind === "prototype" && r.status === "failed",
+                      (r) =>
+                        r.kind === "prototype" &&
+                        !r.cancellationPending &&
+                        ["failed", "cancelled"].includes(r.status),
                     )
                     .slice(0, 1)
                     .map((r) => (
                       <div className="ag-inline-error" key={r.id}>
                         <AlertCircle size={18} />
                         <div>
-                          <b>原型制作未完成</b>
-                          <p>{r.error || "查看完整记录以了解原因"}</p>
-                          <a href={`/api/agent/runs/${r.id}/export`}>
-                            下载执行记录
-                          </a>
+                          <b>
+                            {r.status === "cancelled"
+                              ? "原型制作已取消"
+                              : "原型制作未完成"}
+                          </b>
+                          <p>
+                            {r.status === "cancelled"
+                              ? "执行已结束，已保存的调用量与过程记录会保留。"
+                              : r.error || "查看完整记录以了解原因"}
+                          </p>
+                          {cancellationNotice(r)}
+                          {runFooter(r)}
                         </div>
                       </div>
                     ))}
@@ -2807,92 +3221,43 @@ export default function AgentApp() {
                     "跟进待办",
                     "记录进展与跟进日期，让待办回到下一次研究。",
                   )}
-                  <div className="ag-task-summary">
-                    <div>
-                      <strong>{actions.filter((a) => !a.done).length}</strong>
-                      <span>待跟进</span>
-                    </div>
-                    <div>
-                      <strong>{actions.filter((a) => a.done).length}</strong>
-                      <span>已完成</span>
-                    </div>
-                    <div>
-                      <strong>{actions.length}</strong>
-                      <span>总行动项</span>
-                    </div>
-                    <p>
-                      <Clock3 size={15} />
-                      日期用于整理跟进顺序。此版本不会自动提醒或执行。
-                    </p>
-                  </div>
-                  <div className="ag-filter-tabs">
-                    {[
-                      { id: "open", title: "待跟进" },
-                      { id: "done", title: "已完成" },
-                      { id: "all", title: "全部" },
-                    ].map((f) => (
-                      <button
-                        className={taskFilter === f.id ? "active" : ""}
-                        key={f.id}
-                        onClick={() => setTaskFilter(f.id)}
-                      >
-                        {f.title}
-                      </button>
-                    ))}
-                  </div>
-                  {actions.filter(
-                    (a) =>
-                      taskFilter === "all" ||
-                      (taskFilter === "done" ? a.done : !a.done),
-                  ).length ? (
-                    <div className="ag-task-list">
-                      {actions
-                        .filter(
-                          (a) =>
-                            taskFilter === "all" ||
-                            (taskFilter === "done" ? a.done : !a.done),
-                        )
-                        .sort((a, b) =>
-                          (a.dueDate || "9999-12-31").localeCompare(
-                            b.dueDate || "9999-12-31",
-                          ),
-                        )
-                        .map((a) => (
-                          <TaskCard
-                            key={`${a.run.id}-${a.id}`}
-                            action={a}
-                            sources={sourceChips(a.sourceIds, a.run)}
-                            onToggle={() => toggleAction(a)}
-                            onSave={(data) => saveAction(a, data)}
-                            onResearch={() => navigate("research", a.run.id)}
-                            onFollowUp={() => followUp(a)}
-                            onRequirement={(index) =>
-                              viewRequirement(a.run, index)
-                            }
-                          />
-                        ))}
-                    </div>
-                  ) : (
-                    <Empty
-                      icon={ListChecks}
-                      title={
-                        actions.length ? "这个列表已经清空" : "把下一步留在这里"
-                      }
-                      description={
-                        actions.length
-                          ? "切换筛选可查看其他行动项。"
-                          : "研究完成后，验证、访谈和后续分析等行动项会自动归入项目待办。"
-                      }
-                    >
-                      <button
-                        className="ag-button light"
-                        onClick={() => navigate("research")}
-                      >
-                        回到研究
-                        <ArrowRight size={14} />
-                      </button>
-                    </Empty>
-                  )}
+                  <Suspense
+                    fallback={
+                      <div className="ag-detail-notice">
+                        <Loader2 size={15} className="ag-spin" />
+                        正在加载跟进工作区…
+                      </div>
+                    }
+                  >
+                    <TaskWorkspace
+                      key={project?.id || projectId}
+                      projectId={project?.id || projectId}
+                      runs={runs}
+                      filter={taskFilter}
+                      onFilter={setTaskFilter}
+                      request={api}
+                      onUpdated={(value) => mergeRun(value as Run)}
+                      sources={(id, ids) => {
+                        const from = runs.find((run) => run.id === id);
+                        return from ? sourceChips(ids, from) : null;
+                      }}
+                      onResearch={(id) => navigate("research", id)}
+                      onRequirement={(id, index) => {
+                        const from = runs.find((run) => run.id === id);
+                        if (from) viewRequirement(from, index);
+                      }}
+                      onFollowUp={(id, action) => {
+                        const from = runs.find((run) => run.id === id);
+                        if (from)
+                          followUp({
+                            ...action,
+                            id: action.id || action.modelId || "",
+                            run: from,
+                          });
+                      }}
+                      onNewResearch={() => navigate("research")}
+                    />
+                  </Suspense>
                 </>
               )}
               {page === "evaluation" && (
@@ -3216,194 +3581,6 @@ export default function AgentApp() {
         />
       )}
     </div>
-  );
-}
-
-function TaskCard({
-  action,
-  sources,
-  onToggle,
-  onSave,
-  onResearch,
-  onFollowUp,
-  onRequirement,
-}: {
-  action: Action & { run: Run };
-  sources: React.ReactNode;
-  onToggle: () => Promise<void>;
-  onSave: (data: { note: string; dueDate: string | null }) => Promise<void>;
-  onResearch: () => void;
-  onFollowUp: () => void;
-  onRequirement: (index: number) => void;
-}) {
-  const dateInput = useRef<HTMLInputElement>(null);
-  const [editing, setEditing] = useState(false),
-    [note, setNote] = useState(action.note || ""),
-    [dueDate, setDueDate] = useState(action.dueDate || ""),
-    [saving, setSaving] = useState(false),
-    [error, setError] = useState("");
-  const overdue =
-    !action.done &&
-    !!action.dueDate &&
-    action.dueDate <
-      new Date().toLocaleDateString("sv-SE", { timeZone: "Asia/Shanghai" });
-  const linkedRequirementIndices = Array.isArray(action.requirementIndices)
-    ? Array.from(new Set(action.requirementIndices)).filter(
-        (index) =>
-          Number.isInteger(index) &&
-          index >= 0 &&
-          index < (action.run.result?.requirements?.length || 0),
-      )
-    : [];
-  const invalidRequirementLink =
-    !!action.requirementIndices?.length &&
-    linkedRequirementIndices.length !== action.requirementIndices.length;
-  async function save() {
-    setSaving(true);
-    setError("");
-    try {
-      await onSave({
-        note: note.trim(),
-        dueDate: dateInput.current?.value || null,
-      });
-      setEditing(false);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setSaving(false);
-    }
-  }
-  return (
-    <article className={`ag-task-card ${action.done ? "done" : ""}`}>
-      <button
-        className="ag-checkbox"
-        disabled={saving}
-        aria-label={
-          action.done
-            ? `将 ${action.title} 标记为未完成`
-            : `完成 ${action.title}`
-        }
-        aria-pressed={action.done}
-        onClick={() => void onToggle()}
-      >
-        {action.done && <Check size={13} />}
-      </button>
-      <div className="ag-task-body">
-        <h3>{action.title}</h3>
-        {sources}
-        {!!linkedRequirementIndices.length && (
-          <div className="ag-task-requirements">
-            <span>明确关联需求</span>
-            {linkedRequirementIndices.map((index) => (
-              <button key={index} onClick={() => onRequirement(index)}>
-                <FileText size={12} />
-                {index + 1}. {action.run.result?.requirements?.[index]?.title}
-                <ArrowUpRight size={12} />
-              </button>
-            ))}
-          </div>
-        )}
-        {invalidRequirementLink && (
-          <p className="ag-task-link-warning">
-            部分需求关联重复或无效，需要核对原始研究记录。
-          </p>
-        )}
-        <div className="ag-task-metadata">
-          <small>
-            来自 {kindLabels[action.run.kind]} · {date(action.run.createdAt)}
-          </small>
-          {action.dueDate && (
-            <span className={overdue ? "overdue" : ""}>
-              <Clock3 size={12} />
-              {overdue ? "已过跟进日期 · " : "跟进 "}
-              {action.dueDate}
-            </span>
-          )}
-        </div>
-        {!!action.note && !editing && (
-          <p className="ag-task-note">{action.note}</p>
-        )}
-        <div className="ag-task-tools">
-          <button
-            className="ag-text-button"
-            onClick={() => {
-              setNote(action.note || "");
-              setDueDate(action.dueDate || "");
-              setError("");
-              setEditing(!editing);
-            }}
-            disabled={saving}
-          >
-            <Pencil size={12} />
-            {editing ? "收起编辑" : "日期与进展"}
-          </button>
-          <button className="ag-text-button" onClick={onResearch}>
-            研究依据
-            <ArrowUpRight size={12} />
-          </button>
-          <button className="ag-text-button" onClick={onFollowUp}>
-            <MessageSquare size={12} />
-            继续研究
-            <ArrowRight size={12} />
-          </button>
-        </div>
-        {editing && (
-          <div className="ag-task-editor">
-            <label>
-              跟进日期
-              <input
-                ref={dateInput}
-                type="date"
-                value={dueDate}
-                onChange={(e) => setDueDate(e.target.value)}
-                onBlur={(e) => setDueDate(e.currentTarget.value)}
-                disabled={saving}
-              />
-            </label>
-            <label>
-              进展与补充信息
-              <textarea
-                value={note}
-                onChange={(e) => setNote(e.target.value)}
-                placeholder="记录已做的验证、发现和下一步…"
-                rows={3}
-                maxLength={4000}
-                disabled={saving}
-              />
-            </label>
-            <div className="ag-task-editor-bottom">
-              <small>手动记录日期，不会自动提醒或调用模型。</small>
-              <button
-                type="button"
-                className="ag-button light small"
-                onClick={() => setEditing(false)}
-                disabled={saving}
-              >
-                取消
-              </button>
-              <button
-                type="button"
-                className="ag-button primary small"
-                disabled={saving}
-                onClick={() => void save()}
-              >
-                {saving ? (
-                  <Loader2 size={13} className="ag-spin" />
-                ) : (
-                  <Check size={13} />
-                )}
-                保存跟进
-              </button>
-            </div>
-            {error && (
-              <p className="ag-field-error" role="alert">
-                {error}
-              </p>
-            )}
-          </div>
-        )}
-      </div>
-    </article>
   );
 }
 

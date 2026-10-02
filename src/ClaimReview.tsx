@@ -16,6 +16,7 @@ import {
   X,
 } from "lucide-react";
 
+type SourceOrigin = { kind: "git-commit" | "text-import"; commit?: string; relativePath?: string; note?: string };
 export type ClaimCitation = {
   sourceId: string;
   quote: string;
@@ -33,7 +34,9 @@ export type ClaimCitation = {
     retrievalUrl?: string;
     sha256: string;
     textSha256: string;
-    fetchedAt: string;
+    fetchedAt: string | null;
+    capturedAt?: string | null;
+    origin?: SourceOrigin;
     publishedAt: null;
     publishedDateKnown: false;
     truncated?: boolean;
@@ -53,7 +56,9 @@ export type ReviewSource = {
   url: string;
   text?: string;
   sha256: string;
-  fetchedAt: string;
+  fetchedAt: string | null;
+  capturedAt?: string | null;
+  origin?: SourceOrigin;
   status: string;
 };
 type ReviewStatus =
@@ -368,7 +373,7 @@ export default function ClaimReview({
         {citation.sourcePin && (
           <div className="ag-audit-pin">
             <span>
-              抓取 {time(citation.sourcePin.fetchedAt)} · 网页发布日期未知
+              {citation.sourcePin.origin ? <>本机导入 {time(citation.sourcePin.capturedAt || undefined)} · {citation.sourcePin.origin.kind === "git-commit" ? `固定提交 ${citation.sourcePin.origin.commit?.slice(0, 12)}` : "提交者文本，出处未独立核验"}</> : <>抓取 {time(citation.sourcePin.fetchedAt || undefined)} · 网页发布日期未知</>}
             </span>
             <span title={citation.sourcePin.sha256}>
               SHA256 {citation.sourcePin.sha256.slice(0, 12)}
@@ -882,7 +887,7 @@ function QuoteEditor({
       </label>
       {source && (
         <div className="ag-audit-pin">
-          <span>抓取 {time(source.fetchedAt)}</span>
+          <span>{source.origin ? `本机导入 ${time(source.capturedAt || undefined)}` : `抓取 ${time(source.fetchedAt || undefined)}`}</span>
           <span title={source.sha256}>SHA256 {source.sha256.slice(0, 12)}</span>
           <button type="button" onClick={() => onSource(source.id)}>
             查看原文

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import { isUsableEvidence } from "./evidence.mjs";
 
 const hash = text => createHash("sha256").update(text).digest("hex");
 const warn = (code, message) => ({ code, message });
@@ -11,7 +12,7 @@ const fail = (message, status = 400, extra = {}) => Object.assign(new Error(mess
 const activeMemory = p => (p?.memory || []).filter(m => !m.status || m.status === "active");
 const snapshot = p => ({ id: p?.id || null, name: p?.name || "", background: p?.background || "", goal: p?.goal || "", constraints: p?.constraints || "", memory: activeMemory(p).map(m => ({ id: m.id, text: m.text, source: m.source || "用户确认", revisionId: m.revisionId || null, status: "active" })), memoryRevision: p?.memoryRevision ?? 0 });
 function sourcePin(source) {
-  return { id: source.id, title: source.title || "", url: source.url, sha256: source.sha256 || null, rawSha256: typeof source.raw === "string" ? hash(source.raw) : null, textSha256: typeof source.text === "string" ? hash(source.text) : null, fetchedAt: source.fetchedAt || null, publishedAt: null, truncated: !!source.truncated, extraction: source.extraction || null, reusedFrom: source.reusedFrom || null, reusedAt: source.reusedAt || null, snapshotIntegrity: source.status === "fetched" && typeof source.raw === "string" && source.sha256 === hash(source.raw) };
+  return { id: source.id, title: source.title || "", url: source.url, retrievalUrl: source.retrievalUrl || source.url, sha256: source.sha256 || null, rawSha256: typeof source.raw === "string" ? hash(source.raw) : null, textSha256: typeof source.text === "string" ? hash(source.text) : null, fetchedAt: source.fetchedAt || null, capturedAt: source.capturedAt || null, origin: source.origin || null, publishedAt: null, publishedDateKnown: false, truncated: !!source.truncated, extraction: source.extraction || null, reusedFrom: source.reusedFrom || null, reusedAt: source.reusedAt || null, ageAtReuseSeconds: source.ageAtReuseSeconds ?? null, snapshotIntegrity: isUsableEvidence(source) };
 }
 const indexArray = (value, size) => Array.isArray(value) && value.every(i => Number.isInteger(i) && i >= 0 && i < size) && new Set(value).size === value.length;
 
@@ -51,7 +52,7 @@ export function projectRequirementBasis(run, audit) {
       if (!pin.snapshotIntegrity) warnings.push(warn("SOURCE_INTEGRITY_UNAVAILABLE", "来源快照校验不完整，不能假称证据可靠。"));
       if (pin.truncated) warnings.push(pin.extraction ? warn("SOURCE_TRUNCATED", "来源提取正文被截断，引用不代表覆盖完整内容。") : warn("SOURCE_TRUNCATION_UNCERTAIN", "旧快照的截断标记未区分 HTML 转换与正文上限截断，完整性需核对。"));
       if (pin.reusedAt) warnings.push(warn("REUSED_SOURCE_SNAPSHOT", "来源是保存的历史快照，未在本次重新读取。"));
-      warnings.push(warn("PUBLISHED_DATE_UNKNOWN", "来源抓取时间不是发布日期，现状或价格仍需重新核实。"));
+      warnings.push(pin.origin ? warn("LOCAL_IMPORT_NOT_ONLINE_VERIFICATION", "来源为明确导入的本地提交或提交者文本，没有在线核验最新状态；导入时间不是发布日期。") : warn("PUBLISHED_DATE_UNKNOWN", "来源抓取时间不是发布日期，现状或价格仍需重新核实。"));
     }
     return { key: requirementKey(run.id, index), index, modelId: requirement.id, title: requirement.title, description: requirement.description, sourceIds: requirement.sourceIds || [], acceptance: requirement.acceptance || [], basis, basisState: !basis ? "legacy" : warnings.some(w => w.code.startsWith("INVALID_")) ? "invalid" : "explicit", bindings, warnings };
   });
@@ -66,6 +67,18 @@ function excerpt(text, max = 1200) {
   let end = Math.min(text.length, max);
   if (end > 0 && /[\ud800-\udbff]/.test(text[end - 1]) && /[\udc00-\udfff]/.test(text[end] || "")) end--;
   return { text: text.slice(0, end), start: 0, end, fullChars: text.length, truncatedForPrompt: end < text.length, unit: "utf16-code-units" };
+}
+function modelRequirement(requirement) {
+  // Keep complete audit/source pins in the frozen archive. The model receives
+  // each source pin once in modelInput.sources, referenced by sourceId from
+  // literal quotes; repeating the same metadata does not add evidence.
+  const citation = ({ sourcePin, ...quote }) => quote;
+  return { ...requirement, warnings: [...new Map(requirement.warnings.map(w => [JSON.stringify(w), w])).values()], bindings: {
+    ...requirement.bindings,
+    projectFields: requirement.bindings.projectFields.map(f => ({ field: f.field, textSha256: f.textSha256, excerpt: excerpt(f.text) })),
+    sources: requirement.bindings.sources.map(s => ({ id: s.id, snapshotIntegrity: s.snapshotIntegrity })),
+    claims: requirement.bindings.claims.map(c => ({ ...c, quoteChecks: c.quoteChecks.map(citation), citations: c.citations.map(citation) })),
+  } };
 }
 export function buildPrototypeBrief({ parent, currentProject, audit, body, previousPrototype = null, maxChars = Number(process.env.YIBAN_PROTOTYPE_BRIEF_MAX_CHARS || 29000) }) {
   const input = prototypeRequestSchema.parse(body || {});
@@ -90,8 +103,8 @@ export function buildPrototypeBrief({ parent, currentProject, audit, body, previ
   const modelInput = {
     purpose: "exploration", prototypeMode, revisionTarget, instruction: "需求是候选方案。unknown、未审阅和矛盾内容是待验证假设；支持标注不是事实担保。当前项目上下文优先，研究时背景仅作历史依据。", researchRunId: parent.id,
     currentProject: { id: currentProjectSnapshot.id, name: currentProjectSnapshot.name, backgroundExcerpt: excerpt(currentProjectSnapshot.background), goal: currentProjectSnapshot.goal, constraints: currentProjectSnapshot.constraints, memory: currentMemory, omittedMemoryCount: currentProjectSnapshot.memory.length - currentMemory.length, memoryRevision: currentProjectSnapshot.memoryRevision },
-    contextDiff, selectedIndices: indices, requirements: requirements.map(r => ({ ...r, bindings: { ...r.bindings, projectFields: r.bindings.projectFields.map(f => ({ field: f.field, textSha256: f.textSha256, excerpt: excerpt(f.text) })) } })),
-    sources: sourceSnapshots.map(s => ({ ...sourcePin(s), capturedExcerpt: excerpt(s.text || "", 1200), note: "完整提取正文保存在档案；模型这里只看到明确标记的摘录和需求绑定引文，不能声称通读全部来源。" })), warnings,
+    contextDiff, selectedIndices: indices, requirements: requirements.map(modelRequirement), sourcePinsPlacement: "Each sourceId resolves to the single complete pin in sources; quotation text and locator are retained in requirement bindings.",
+    sources: sourceSnapshots.map(s => ({ ...sourcePin(s), capturedExcerpt: excerpt(s.text || "", 1200), note: "完整提取正文保存在档案；模型这里只看到明确标记的摘录和需求绑定引文，不能声称通读全部来源。" })), warnings: [...new Map(warnings.map(w => [JSON.stringify(w), w])).values()],
   };
   const prompt = "根据以下已保存的研究需求制作一个可交互的中文前端原型。必须标明示例数据，保留所选需求索引、来源ID和研究任务关联。不得伪造真实AI或后端。保留待验证假设及资料限制，不宣称审阅等于事实。\n" + JSON.stringify(modelInput) + "\n追加要求：" + input.prompt;
   if (!Number.isInteger(maxChars) || maxChars < 1000) throw fail("原型输入预算配置无效。", 500);

@@ -113,6 +113,26 @@ test("篡改或缺原始正文的来源不能伪装成可追溯快照", async t 
   assert.equal((await f.request("/runs", "POST", { projectId: p.id, prompt: "复用已保存的原始证据", sourceIds: ["bad"] })).status, 400);
 });
 
+test("明确导入的项目资料通过实际研究路由进入模型上下文而不抓网页，来源隔离和ZIP保留", async t => {
+  let fetches = 0; const seen = [];
+  const f = await fixture(t, { runner: async input => { seen.push(input); return output(input); }, evidenceFetcher: async () => { fetches++; throw new Error("local import must not fetch"); } });
+  const p = await f.project(), q = await f.project();
+  const input = { kind: "text-import", sourceLabel: "隔离项目资料，非官方核验", text: "明确导入用于验证真实研究路由的本机文本，没有网络验证，也不自动成为确认记忆。".repeat(4) };
+  const preview = await f.request(`/projects/${p.id}/sources/preview`, "POST", input);
+  assert.equal(preview.status, 200); assert.equal((await f.store.list("project-source")).length, 0);
+  const saved = await f.request(`/projects/${p.id}/sources`, "POST", { ...input, confirm: true, expectedImportFingerprint: preview.data.expectedImportFingerprint, importerType: "implementation-fixture", importerLabel: "隔离验收夹具" });
+  assert.equal(saved.status, 201); assert.equal(saved.data.fetchedAt, null);
+  const body = { projectId: p.id, kind: "research", prompt: "只使用本次明确选入的本机资料形成判断", sourceIds: [saved.data.id], sourceUrls: [] };
+  const start = await f.request("/runs", "POST", body); assert.equal(start.status, 202);
+  const run = await f.wait(start.data.id); assert.equal(run.status, "completed"); assert.equal(fetches, 0);
+  assert.equal(seen[0].sources[0].origin.kind, "text-import"); assert.equal(seen[0].sources[0].status, "imported"); assert.equal(seen[0].sources[0].text, input.text);
+  assert.equal((await f.request(`/projects/${p.id}/memory`)).data.memory.length, 0);
+  assert.equal((await f.request("/runs", "POST", { ...body, projectId: q.id })).status, 400);
+  const zip = await JSZip.loadAsync(await (await fetch(f.base + "/runs/" + run.id + "/export")).arrayBuffer());
+  const pin = JSON.parse(await zip.file(`evidence/${saved.data.id}.json`).async("string"));
+  assert.equal(pin.origin.kind, "text-import"); assert.equal(pin.fetchedAt, null); assert.equal(pin.importedBy.type, "implementation-fixture");
+});
+
 test("行动项支持日期备注、拒绝无效日期、失败任务和重复 ID", async t => {
   const f = await fixture(t); const p = await f.project();
   const s = await f.request("/runs", "POST", { projectId: p.id, kind: "recall", prompt: "形成一个待人工验证的行动项" });

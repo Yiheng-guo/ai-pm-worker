@@ -29,7 +29,9 @@ type SourcePin = {
   url: string;
   sha256: string;
   textSha256?: string | null;
-  fetchedAt: string;
+  fetchedAt: string | null;
+  capturedAt?: string | null;
+  origin?: { kind: "git-commit" | "text-import"; commit?: string; relativePath?: string; note?: string } | null;
   publishedAt?: string | null;
   truncated?: boolean;
   extraction?: {
@@ -559,7 +561,7 @@ function BasisDetails({
                   <ArrowUpRight size={12} />
                 </button>
                 <small>
-                  抓取 {date(source.fetchedAt)} ·{" "}
+                  {source.origin ? `本机导入 ${date(source.capturedAt || undefined)} · ${source.origin.kind === "git-commit" ? `固定提交 ${source.origin.commit?.slice(0, 12)}` : "提交者文本"}` : `抓取 ${date(source.fetchedAt || undefined)}`} ·{" "}
                   {source.reusedFrom
                     ? "复用历史快照，未重新验证网络现状"
                     : "保存的抓取快照"}
