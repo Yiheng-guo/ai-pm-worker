@@ -2,7 +2,7 @@
 
 懂项目背景的 AI 产品研究助理。用 nanobot 执行研究，连接造物验证原型，在一个工作台里查看项目背景、对话、证据、需求、原型、待办和真实评测。
 
-[六步真实演示](docs/demo/README.md) · [公开演示与离线原型](docs/PUBLIC_DEMO.md) · [完整本机演示指南](docs/DEMO_GUIDE.md)
+[在线六步演示](https://yiheng-guo.github.io/ai-pm-worker/) · [体验交互原型](https://yiheng-guo.github.io/ai-pm-worker/demo/prototype.html) · [实拍与来源记录](docs/demo/README.md) · [完整本机启动指南](docs/PUBLIC_DEMO.md)
 
 这是在原有亦伴和造物上的整合迭代：亦伴提供统一研究工作台，nanobot 执行受控研究，造物是独立原型服务。公开演示用于了解流程和体验示例原型，不连接你的私人工作空间，也不调用模型；完整研究能力按下方步骤在本机运行。
 

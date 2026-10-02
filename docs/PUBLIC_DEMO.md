@@ -1,6 +1,6 @@
 # 公开演示与本机上手
 
-先用[六步实拍和离线交互原型](demo/README.md)了解产品，无需登录、无需模型调用。GitHub 文档可以直接查看图片；下载仓库后，双击 `docs/demo/index.html` 打开可切换的演示。在线静态演示是否已发布，以仓库 README 中经过核验的入口为准。
+先用[在线六步演示](https://yiheng-guo.github.io/ai-pm-worker/)或[可点击探索原型](https://yiheng-guo.github.io/ai-pm-worker/demo/prototype.html)了解产品，无需登录、无需模型调用。[GitHub 演示文档](demo/README.md)可以直接查看图片；下载仓库后，双击 `docs/demo/index.html` 打开可切换的离线演示。
 
 公开静态演示与完整产品分开：静态站展示已保存案例，探索原型只操作浏览器示例数据；它不能替你发起新的竞品研究、保存工作空间、调用造物生成或执行待办。
 

@@ -2,6 +2,8 @@
 
 此目录是无需模型授权的静态演示：六张真实页面实拍，加上一份可点击的探索原型。它不包含工作空间数据库、模型授权、私人会话或完整运行日志。
 
+[打开在线演示](https://yiheng-guo.github.io/ai-pm-worker/) · [直接体验原型](https://yiheng-guo.github.io/ai-pm-worker/demo/prototype.html)
+
 第一次克隆完整产品不会恢复作者数据库或历史实测；演示中的已保存结果只通过图片与公开原型呈现，需要你在自己的工作空间建立项目。
 
 - [演示页面源码](index.html)：下载仓库后可双击打开；GitHub 文件预览不会执行 HTML。
