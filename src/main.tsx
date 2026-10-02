@@ -1931,4 +1931,9 @@ function LoginScreen({
     </div>
   );
 }
-createRoot(document.getElementById("root")!).render(new URLSearchParams(location.search).has("legacy") ? <App /> : <AgentApp />);
+const useLegacyWorkspace =
+  new URLSearchParams(location.search).has("legacy") ||
+  import.meta.env.VITE_WORKSPACE_ENTRY === "legacy";
+createRoot(document.getElementById("root")!).render(
+  useLegacyWorkspace ? <App /> : <AgentApp />,
+);

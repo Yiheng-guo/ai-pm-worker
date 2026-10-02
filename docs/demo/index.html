@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="亦伴 Personal Agent：六步真实页面演示与无需登录、无需模型调用的交互探索原型。">
+  <title>亦伴 · Personal Agent 演示</title>
+  <style>
+    :root{color-scheme:light;--ink:#23392f;--muted:#65756a;--green:#355343;--line:#dce3da;--paper:#fbfcf9;--tint:#edf1e4}
+    *{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.7 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}a{color:var(--green);text-underline-offset:3px}button,a:focus-visible{outline-offset:4px}button{font:inherit;cursor:pointer}main{max-width:1280px;margin:auto;padding:28px 24px 40px}header{display:flex;justify-content:space-between;gap:16px;align-items:center;border-bottom:1px solid var(--line);padding-bottom:18px}.brand{font-weight:600;font-size:20px}.brand small{font-size:12px;font-weight:400;color:var(--muted);margin-left:12px}nav{display:flex;gap:18px;flex-wrap:wrap;font-size:14px}.intro{display:grid;grid-template-columns:1fr auto;align-items:center;gap:24px;padding:34px 0 20px}.eyebrow{color:var(--muted);font-size:12px;letter-spacing:.12em}h1{margin:8px 0 10px;font-size:clamp(28px,4vw,40px);font-weight:600;line-height:1.3}.intro p{margin:0;max-width:780px;color:var(--muted)}.primary{display:inline-block;background:var(--green);border-radius:8px;color:white;text-decoration:none;padding:12px 20px;white-space:nowrap}.note{margin:0 0 24px;padding:14px 18px;border:1px solid var(--line);background:var(--tint);border-radius:10px;font-size:14px}.steps{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px}.steps button{border:1px solid var(--line);border-radius:7px;background:white;padding:9px 14px;color:var(--ink)}.steps button[aria-pressed="true"]{background:var(--green);color:white;border-color:var(--green)}.step-heading{display:flex;align-items:center;justify-content:space-between;gap:16px}h2{font-size:21px;font-weight:600;margin:0}.arrow{display:flex;gap:6px}.arrow button{width:40px;height:36px;background:white;border:1px solid var(--line);border-radius:6px}.arrow button:disabled{opacity:.35;cursor:default}#detail{margin:8px 0 16px;color:var(--muted);max-width:1040px}.frame{background:white;border:1px solid var(--line);border-radius:10px;overflow:hidden}.frame img{display:block;width:100%;height:auto}.caption{display:flex;justify-content:space-between;gap:16px;padding:12px 16px;background:white;color:var(--muted);font-size:13px}.next{display:flex;align-items:center;justify-content:space-between;gap:24px;padding:24px 0}.next p{margin:0;color:var(--muted);font-size:14px}.next strong{color:var(--ink)}footer{border-top:1px solid var(--line);padding-top:18px;font-size:13px;color:var(--muted)}footer p{margin:0 0 8px}noscript .fallback{display:block;margin:18px 0}.fallback img{max-width:100%;height:auto} @media(max-width:660px){main{padding:18px 14px 28px}header,.intro,.next{display:flex;align-items:flex-start;flex-direction:column}header{gap:10px}.intro{padding-top:24px;gap:16px}.brand small{display:block;margin-left:0}.caption{display:block}.caption a{display:inline-block;margin-top:6px}.steps{gap:6px}.steps button{padding:8px 10px;font-size:14px}.step-heading{align-items:flex-start}nav{gap:12px}.next{gap:14px}}
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="brand">亦伴 <small>PERSONAL PRODUCT AGENT · v0.5</small></div>
+    <nav aria-label="资源"><a href="https://github.com/Yiheng-guo/ai-pm-worker">亦伴源码</a><a href="https://github.com/Yiheng-guo/product-foundry">造物源码</a><a href="https://github.com/Yiheng-guo/ai-pm-worker/blob/main/docs/PUBLIC_DEMO.md">启动说明</a></nav>
+  </header>
+  <section class="intro">
+    <div><div class="eyebrow">从研究到可验证的产品</div><h1>懂项目背景，判断有据可查。</h1><p>亦伴连接 nanobot 与造物，把项目背景、研究、证据、需求、原型和待办放在同一条工作流里。下面是同一条已保存案例的六步实拍。</p></div>
+    <a class="primary" href="prototype.html">体验交互探索原型 →</a>
+  </section>
+  <p class="note">公开演示无需登录，也不调用模型。截图来自 2026-10-02 的本机 v0.5；研究使用固定 Git 文档快照。可点击原型使用示例业务数据和显式关联规则，不代表线上 AI 服务或自动语义判断。</p>
+  <section aria-label="六步真实页面演示">
+    <div class="steps" role="group" aria-label="选择演示步骤">
+      <button type="button" data-step="0" aria-pressed="true">1 项目背景</button><button type="button" data-step="1" aria-pressed="false">2 研究判断</button><button type="button" data-step="2" aria-pressed="false">3 来源证据</button><button type="button" data-step="3" aria-pressed="false">4 需求草稿</button><button type="button" data-step="4" aria-pressed="false">5 原型验证</button><button type="button" data-step="5" aria-pressed="false">6 跟进待办</button>
+    </div>
+    <div class="step-heading"><h2 id="stepTitle">1 · 项目背景</h2><div class="arrow"><button id="previous" type="button" aria-label="上一步" disabled>←</button><button id="next" type="button" aria-label="下一步">→</button></div></div>
+    <p id="detail" aria-live="polite">项目目标、背景、约束和已确认记忆汇总在同一个入口；确认记忆可以纠正、停用和追溯历史。此案例保存了 1 条确认记忆。</p>
+    <div class="frame"><img id="screenshot" src="assets/overview.jpg" alt="亦伴项目总览：项目背景、最近工作和记忆入口"><div class="caption"><span>真实页面实拍 · 图片不会执行研究操作</span><a id="fullImage" href="assets/overview.jpg" target="_blank" rel="noopener">打开原图</a></div></div>
+    <noscript><div class="fallback">未启用 JavaScript 时，可直接浏览 <a href="assets/research.jpg">研究判断</a>、<a href="assets/evidence.jpg">来源证据</a>、<a href="assets/requirements.jpg">需求草稿</a>、<a href="assets/prototype.jpg">原型验证</a>、<a href="assets/tasks.jpg">跟进待办</a>，也可以打开 <a href="prototype.html">交互原型</a>。</div></noscript>
+  </section>
+  <section class="next" aria-label="亲自上手"><p><strong>先试一次依据变化复核。</strong><br>在原型中模拟背景修改、记忆纠正或停用，查看关联对象和无关对照，填写人工复核理由，导出本地 JSON。数据只保存在你的浏览器或本页内存中。</p><a class="primary" href="prototype.html">开始本地示例 →</a></section>
+  <footer><p>完整 AI 研究、项目持久化、造物生成与真实用量记录需要克隆两个仓库，在本机启动服务并配置自己的模型授权。公开静态站没有后台，也不会收集你在原型里输入的资料。</p><p>探索原型先由模型生成，再由实施者修正导出体验；公开副本保留原始页面。实拍、出处和版本说明见 <a href="https://github.com/Yiheng-guo/ai-pm-worker/blob/main/docs/demo/README.md">演示来源记录</a>。样本有限，不能由单次演示推出普遍准确率或成本收益。</p></footer>
+</main>
+<script>
+(() => {
+  const steps = [
+    {title:'项目背景',file:'overview',alt:'亦伴项目总览：项目背景、最近工作和记忆入口',detail:'项目目标、背景、约束和已确认记忆汇总在同一个入口；确认记忆可以纠正、停用和追溯历史。此案例保存了 1 条确认记忆。'},
+    {title:'研究判断',file:'research',alt:'亦伴真实研究：价值判断、事实与推断及审阅边界',detail:'同一条已保存研究形成 4 条主张，区分事实、推断和未知。结论是采用机制参考、暂缓全面推广；摘录匹配不等于事实正确，也不证明新增机制有净收益。'},
+    {title:'来源证据',file:'evidence',alt:'亦伴证据库：固定 Git 文档、来源正文与截断限制',detail:'这条研究引用 3 份固定提交文档，保留时间、哈希和覆盖限制；来源库也如实展示重复使用的快照及失败记录。本例没有把本机导入冒充最新网页抓取。'},
+    {title:'需求草稿',file:'requirements',alt:'亦伴需求草稿：候选需求、论证依据和验收条件',detail:'形成 2 条候选需求，连接主张、项目字段、确认记忆、假设和验证方法。原型只选择第一条“背景与记忆变化后的影响复核”，未把其他需求混入制作范围。'},
+    {title:'原型验证',file:'prototype',alt:'亦伴交互原型：造物生成的需求依据变化复核及示例边界',detail:'造物生成探索原型，实施者修正导出体验，保留 2 个版本及研究关联。下方入口可以亲自操作公开副本；其中对象与业务状态是示例，规则仅检查显式关联。'},
+    {title:'跟进待办',file:'tasks',alt:'亦伴跟进待办：两个待验证行动、关联需求与实际进展备注',detail:'2 条行动仍待执行验证，保存关联需求和实际进展。完成探索原型不意味着影响识别效果已经验证；跟进日期用于记录与筛选，这一版没有离线自动提醒。'}
+  ];
+  const buttons = [...document.querySelectorAll('[data-step]')];
+  const title = document.getElementById('stepTitle'), detail = document.getElementById('detail'), img = document.getElementById('screenshot'), full = document.getElementById('fullImage'), previous = document.getElementById('previous'), next = document.getElementById('next');
+  let selected = 0;
+  function show(value) {selected = Math.max(0,Math.min(steps.length-1,value));const step = steps[selected];title.textContent = `${selected+1} · ${step.title}`;detail.textContent = step.detail;img.src = `assets/${step.file}.jpg`;img.alt = step.alt;full.href = img.getAttribute('src');buttons.forEach((button,index)=>button.setAttribute('aria-pressed',String(index===selected)));previous.disabled = selected===0;next.disabled = selected===steps.length-1;}
+  buttons.forEach(button=>button.addEventListener('click',()=>show(Number(button.dataset.step))));previous.addEventListener('click',()=>show(selected-1));next.addEventListener('click',()=>show(selected+1));
+})();
+</script>
+</body>
+</html>

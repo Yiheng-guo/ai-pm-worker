@@ -50,6 +50,6 @@ v2是人工验收修正：保留v1，增加可查看/全选复制JSON导出。Cu
 
 正式背景固定为[原版亦伴README](LEGACY_WORKER.md)，底座安装固定提交为 **d0d0a44e57632c3d269e511339cff7ddb698e62e**。研究来源是[Hermes官方仓库](https://github.com/NousResearch/hermes-agent)与[nanobot官方仓库](https://github.com/HKUDS/nanobot)的本次网页快照，并非完整源码审查。每对Agent与基线使用同一快照。
 
-完整JSON/Markdown报告、来源正文/哈希、逐次调用输入/schema/输出/events/usage、失败台账、人工复核ledger、初始/纠正记忆设定、v1/v2原型记录与HTML保存在 data/evaluations/paired-2026-10-02/。在工作台“真实评测”下载完整ZIP，或读取本机[报告](../data/evaluations/paired-2026-10-02/report.md)。[交付清单](DELIVERY_MANIFEST.json)记录路径与文件哈希。原始档案包含项目背景，不自动推送GitHub。
+完整JSON/Markdown报告、来源正文/哈希、逐次调用输入/schema/输出/events/usage、失败台账、人工复核ledger、初始/纠正记忆设定、v1/v2原型记录与HTML保存在作者本机 `data/evaluations/paired-2026-10-02/`。已有该档案的本机工作台可在“真实评测”下载完整ZIP，或读取 `data/evaluations/paired-2026-10-02/report.md`。[交付清单](DELIVERY_MANIFEST.json)记录路径与文件哈希。原始档案包含项目背景，不推送公开 GitHub；首次克隆不会自动恢复作者的历史评测数据。本页公开的是汇总与限制，不能替代原始档案复核。
 
 本次没有模型独立账单，订阅额度不换算现金成本；运行机器、网络与人工维护成本也未计价。
