@@ -3,6 +3,7 @@ import type { FormEvent } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { ClaimCitation } from "./ClaimReview";
+import type { PrototypeBrief, PrototypeRequest } from "./RequirementsWorkspace";
 import {
   ArrowDownToLine,
   ArrowLeft,
@@ -22,6 +23,7 @@ import {
   FileText,
   FlaskConical,
   FolderOpen,
+  GitBranch,
   History,
   LayoutDashboard,
   Link2,
@@ -49,6 +51,12 @@ import {
 } from "lucide-react";
 import "./agent.css";
 const ClaimReview = lazy(() => import("./ClaimReview"));
+const RequirementsWorkspace = lazy(() => import("./RequirementsWorkspace"));
+const PrototypeBriefDetails = lazy(() =>
+  import("./RequirementsWorkspace").then((module) => ({
+    default: module.PrototypeBriefDetails,
+  })),
+);
 
 type Page =
   | "overview"
@@ -109,6 +117,17 @@ type Source = {
   };
   reusedAt?: string;
   ageAtReuseSeconds?: number;
+  truncated?: boolean;
+  extraction?: {
+    method: string;
+    format: string;
+    providedChars: number;
+    extractedChars: number;
+    offsetUnit: string;
+    transformed?: boolean;
+    htmlMarkupRemoved?: boolean;
+    note?: string;
+  };
 };
 type Requirement = {
   id: string;
@@ -124,6 +143,7 @@ type Action = {
   dueDate?: string | null;
   note?: string;
   sourceIds?: string[];
+  requirementIndices?: number[];
 };
 type Run = {
   id: string;
@@ -156,12 +176,14 @@ type Run = {
     code: string;
     prd: string;
     title: string;
+    versionSelection?: "job-version-id" | "legacy-latest-unverified";
   };
   error?: string;
   createdAt: string;
   completedAt?: string;
   updatedAt?: string;
   detailAvailable?: boolean;
+  raw?: { prototypeBrief?: PrototypeBrief };
 };
 type Evaluation = {
   id: string;
@@ -393,6 +415,9 @@ export default function AgentApp() {
     [page, setPage] = useState<Page>("overview"),
     [runId, setRunId] = useState(""),
     [sourceKey, setSourceKey] = useState("");
+  const [requirementIndex, setRequirementIndex] = useState<number | null>(null);
+  const activeProjectId = useRef(projectId);
+  activeProjectId.current = projectId;
   const [projectModal, setProjectModal] = useState<"new" | "edit" | null>(null),
     [mobileNav, setMobileNav] = useState(false),
     [projectMenu, setProjectMenu] = useState(false);
@@ -446,6 +471,10 @@ export default function AgentApp() {
       if (response.status === 401 || response.status === 403) setLocked(true);
       throw Object.assign(new Error(data.error || "请求失败，请稍后重试"), {
         status: response.status,
+        code: data.code,
+        actualChars: data.actualChars,
+        maxChars: data.maxChars,
+        selectedIndices: data.selectedIndices,
       });
     }
     return data;
@@ -496,6 +525,18 @@ export default function AgentApp() {
     setPage(validPage);
     setRunId(nextRun);
     setSourceKey(nextSource);
+    const nextRequirement = Number(hash.get("requirement"));
+    setRequirementIndex(
+      validPage === "requirements" &&
+        hash.has("requirement") &&
+        Number.isInteger(nextRequirement) &&
+        nextRequirement >= 0 &&
+        nextRequirement <
+          (projectRuns.find((run) => run.id === nextRun)?.result?.requirements
+            ?.length || 0)
+        ? nextRequirement
+        : null,
+    );
     const start = Number(hash.get("quoteStart")),
       end = Number(hash.get("quoteEnd")),
       quoteSha = hash.get("quoteSha");
@@ -535,6 +576,8 @@ export default function AgentApp() {
     const h = new URLSearchParams({ project: projectId, page });
     if (runId) h.set("run", runId);
     if (sourceKey) h.set("source", sourceKey);
+    if (page === "requirements" && requirementIndex !== null)
+      h.set("requirement", String(requirementIndex));
     if (quoteLocation?.sourceKey === sourceKey) {
       h.set("quoteStart", String(quoteLocation.start));
       h.set("quoteEnd", String(quoteLocation.end));
@@ -547,7 +590,15 @@ export default function AgentApp() {
       "",
       `${location.pathname}${location.search}#${h.toString()}`,
     );
-  }, [projectId, page, runId, sourceKey, quoteLocation, !!boot]);
+  }, [
+    projectId,
+    page,
+    runId,
+    sourceKey,
+    quoteLocation,
+    requirementIndex,
+    !!boot,
+  ]);
   useEffect(() => {
     if (!boot?.runs.some(isBusy)) return;
     const timer = setInterval(() => {
@@ -794,6 +845,7 @@ export default function AgentApp() {
   function navigate(next: Page, id?: string) {
     setPage(next);
     if (id !== undefined) setRunId(id);
+    setRequirementIndex(null);
     setMobileNav(false);
     contentRef.current?.scrollTo({ top: 0 });
   }
@@ -806,6 +858,18 @@ export default function AgentApp() {
     setSelectedSourceIds([]);
     setSourceUrls("");
     setQuoteLocation(null);
+    setRequirementIndex(null);
+  }
+  function viewRequirement(from: Run, index: number) {
+    if (
+      from.projectId !== project?.id ||
+      !Number.isInteger(index) ||
+      index < 0 ||
+      index >= (from.result?.requirements?.length || 0)
+    )
+      return;
+    navigate("requirements", from.id);
+    setRequirementIndex(index);
   }
   function seed(text: string, recall = false) {
     setPrompt(text);
@@ -929,18 +993,32 @@ export default function AgentApp() {
       setError((e as Error).message);
     }
   }
-  async function generatePrototype(run: Run) {
-    if (submitting) return;
+  async function generatePrototype(
+    researchRunId: string,
+    body: PrototypeRequest,
+  ) {
+    if (submitting) throw new Error("另一项制作正在提交，请稍后重试。");
+    const run = runs.find((item) => item.id === researchRunId);
+    if (
+      !run ||
+      run.projectId !== project?.id ||
+      run.status !== "completed" ||
+      run.kind === "prototype"
+    )
+      throw new Error("研究记录已变化，请重新选择当前项目的已完成研究。");
     setSubmitting(true);
     try {
       const next: Run = await api(`/agent/runs/${run.id}/prototype`, {
         method: "POST",
+        body: JSON.stringify(body),
       });
       setBoot((b) => (b ? { ...b, runs: [next, ...b.runs] } : b));
-      setRunId(next.id);
-      navigate("prototypes");
-    } catch (e) {
-      setError((e as Error).message);
+      if (activeProjectId.current === run.projectId) {
+        setRunId(next.id);
+        navigate("prototypes");
+      } else {
+        setToast("原项目的制作任务已提交，可切回该项目查看记录。");
+      }
     } finally {
       setSubmitting(false);
     }
@@ -1187,12 +1265,9 @@ export default function AgentApp() {
           <ArrowUpRight size={14} />
         </button>
         {!!run.result?.requirements?.length && (
-          <button
-            onClick={() => void generatePrototype(run)}
-            disabled={submitting || !boot!.runtime.foundryAvailable}
-          >
+          <button onClick={() => navigate("requirements", run.id)}>
             <Box size={15} />
-            交给造物制作
+            选择需求交给造物
             <ArrowRight size={14} />
           </button>
         )}
@@ -1219,7 +1294,7 @@ export default function AgentApp() {
             <b>亦伴</b>
             <small>PERSONAL PRODUCT AGENT</small>
           </span>
-          <span className="ag-brand-version">03</span>
+          <span className="ag-brand-version">04</span>
         </a>
         <div className="ag-project-select">
           <button
@@ -2233,7 +2308,7 @@ export default function AgentApp() {
                                 s.preview ||
                                 (s.status === "failed"
                                   ? "来源读取失败，查看执行记录了解原因。"
-                                  : "已存原文，点击读取完整证据。")}
+                                  : "已存原文，点击读取保存的证据正文。")}
                             </p>
                             <small>
                               {date(s.fetchedAt)}
@@ -2297,6 +2372,29 @@ export default function AgentApp() {
                                   摘要保留不变
                                 </p>
                               )}
+                              {selectedSource.extraction ? (
+                                <p>
+                                  已存提取正文{" "}
+                                  {selectedSource.extraction.providedChars.toLocaleString()}{" "}
+                                  /{" "}
+                                  {selectedSource.extraction.extractedChars.toLocaleString()}{" "}
+                                  字符位（UTF-16）
+                                  {selectedSource.truncated
+                                    ? "，受长度上限裁剪"
+                                    : ""}
+                                  {selectedSource.extraction.htmlMarkupRemoved
+                                    ? "；HTML 标记已移除"
+                                    : ""}
+                                  。
+                                  {selectedSource.extraction.note ||
+                                    "提取正文不代表已覆盖页面的全部内容。"}
+                                </p>
+                              ) : selectedSource.truncated ? (
+                                <p>
+                                  旧版覆盖标记待核查：当时没有区分 HTML
+                                  提取与正文裁剪，不能据此判断实际完整性。
+                                </p>
+                              ) : null}
                             </div>
                           </div>
                           {detailNotice()}
@@ -2392,70 +2490,37 @@ export default function AgentApp() {
                     "把值得做的判断写成需求，把验证条件一并留下。",
                   )}
                   {requirements.length ? (
-                    <div className="ag-requirement-list">
-                      {requirements.map((q, i) => (
-                        <article
-                          className={`ag-requirement-card ${q.run.id === runId ? "highlight" : ""}`}
-                          key={`${q.run.id}-${q.id}`}
-                        >
-                          <div className="ag-requirement-top">
-                            <span className="ag-number">
-                              {String(i + 1).padStart(2, "0")}
-                            </span>
-                            <span className="ag-draft-label">需求草稿</span>
-                            <time>{date(q.run.createdAt)}</time>
-                            <button
-                              className="ag-text-button"
-                              onClick={() => navigate("research", q.run.id)}
-                            >
-                              研究依据
-                              <ArrowUpRight size={13} />
-                            </button>
-                          </div>
-                          <h2>{q.title}</h2>
-                          <Markdown text={q.description} />
-                          {sourceChips(q.sourceIds, q.run)}
-                          <div className="ag-acceptance">
-                            <b>
-                              <CheckCircle2 size={15} />
-                              验收与验证
-                            </b>
-                            {Array.isArray(q.acceptance) ? (
-                              <ul>
-                                {q.acceptance.map((a, j) => (
-                                  <li key={j}>{a}</li>
-                                ))}
-                              </ul>
-                            ) : (
-                              <Markdown
-                                text={
-                                  q.acceptance ||
-                                  "尚未提供验收条件，需要进一步明确。"
-                                }
-                              />
-                            )}
-                          </div>
-                          <div className="ag-requirement-footer">
-                            <span>来自：{q.run.prompt.slice(0, 70)}</span>
-                            <button
-                              className="ag-button light small"
-                              onClick={() => void generatePrototype(q.run)}
-                              disabled={
-                                submitting || !boot.runtime.foundryAvailable
-                              }
-                            >
-                              {submitting ? (
-                                <Loader2 size={14} className="ag-spin" />
-                              ) : (
-                                <Box size={14} />
-                              )}
-                              用造物验证交互
-                              <ArrowRight size={13} />
-                            </button>
-                          </div>
-                        </article>
-                      ))}
-                    </div>
+                    <Suspense
+                      fallback={
+                        <div className="ag-detail-notice">
+                          <Loader2 size={15} className="ag-spin" />
+                          正在加载需求工作区…
+                        </div>
+                      }
+                    >
+                      <RequirementsWorkspace
+                        key={project?.id || projectId}
+                        projectId={project?.id || projectId}
+                        runs={runs.filter(
+                          (run) =>
+                            run.kind !== "prototype" &&
+                            run.status === "completed" &&
+                            !!run.result?.requirements?.length,
+                        )}
+                        runId={runId}
+                        focusIndex={requirementIndex}
+                        available={!!boot.runtime.foundryAvailable}
+                        submitting={submitting}
+                        request={api}
+                        onChooseRun={(id) => navigate("requirements", id)}
+                        onSource={(id, sourceId) => {
+                          const from = runs.find((run) => run.id === id);
+                          if (from) viewSource(sourceId, from);
+                        }}
+                        onResearch={(id) => navigate("research", id)}
+                        onGenerate={generatePrototype}
+                      />
+                    </Suspense>
                   ) : (
                     <Empty
                       icon={FileText}
@@ -2502,11 +2567,11 @@ export default function AgentApp() {
                             r.status === "completed" &&
                             r.result?.requirements?.length,
                         );
-                        if (r) void generatePrototype(r);
+                        if (r) navigate("requirements", r.id);
                       }}
                     >
                       <Plus size={14} />
-                      从最新需求制作
+                      选择需求并制作
                     </button>,
                   )}
                   {runs
@@ -2567,6 +2632,7 @@ export default function AgentApp() {
                           { id: "preview", icon: Compass, title: "交互预览" },
                           { id: "code", icon: Code2, title: "原型源码" },
                           { id: "prd", icon: FileText, title: "需求说明" },
+                          { id: "brief", icon: GitBranch, title: "冻结简报" },
                         ].map((v) => (
                           <button
                             key={v.id}
@@ -2583,6 +2649,19 @@ export default function AgentApp() {
                         </span>
                       </div>
                       {detailNotice()}
+                      {!!selectedPrototype.prototype.code &&
+                        selectedPrototype.prototype.versionSelection !==
+                          "job-version-id" && (
+                          <div className="ag-prototype-version-note">
+                            <AlertCircle size={14} />
+                            <p>
+                              {selectedPrototype.prototype.versionSelection ===
+                              "legacy-latest-unverified"
+                                ? "旧造物记录未提供任务绑定的版本 ID，当前展示为当时查询的最新版本，归属尚未验证。"
+                                : "旧版未保存精确的任务与原型版本绑定，版本归属尚未单独验证。"}
+                            </p>
+                          </div>
+                        )}
                       {!selectedPrototype.prototype.code ? (
                         <div className="ag-prototype-loading">
                           <Box size={25} />
@@ -2591,6 +2670,31 @@ export default function AgentApp() {
                               ? "原型内容读取失败，请重试。"
                               : "正在读取这个版本的完整原型…"}
                           </p>
+                        </div>
+                      ) : prototypeTab === "brief" ? (
+                        <div className="ag-prototype-brief-view">
+                          {selectedPrototype.raw?.prototypeBrief ? (
+                            <Suspense
+                              fallback={
+                                <div className="ag-detail-notice">
+                                  正在加载冻结简报…
+                                </div>
+                              }
+                            >
+                              <PrototypeBriefDetails
+                                brief={selectedPrototype.raw.prototypeBrief}
+                                frozen
+                              />
+                            </Suspense>
+                          ) : (
+                            <div className="ag-legacy-brief">
+                              <FileText size={23} />
+                              <h3>旧版本未保存范围简报</h3>
+                              <p>
+                                这个原型保留了源码和制作记录；无法据此补写当时的需求选择、背景快照和审阅状态。
+                              </p>
+                            </div>
+                          )}
                         </div>
                       ) : prototypeTab === "preview" ? (
                         <div className="ag-preview-frame">
@@ -2762,6 +2866,9 @@ export default function AgentApp() {
                             onSave={(data) => saveAction(a, data)}
                             onResearch={() => navigate("research", a.run.id)}
                             onFollowUp={() => followUp(a)}
+                            onRequirement={(index) =>
+                              viewRequirement(a.run, index)
+                            }
                           />
                         ))}
                     </div>
@@ -3119,6 +3226,7 @@ function TaskCard({
   onSave,
   onResearch,
   onFollowUp,
+  onRequirement,
 }: {
   action: Action & { run: Run };
   sources: React.ReactNode;
@@ -3126,6 +3234,7 @@ function TaskCard({
   onSave: (data: { note: string; dueDate: string | null }) => Promise<void>;
   onResearch: () => void;
   onFollowUp: () => void;
+  onRequirement: (index: number) => void;
 }) {
   const dateInput = useRef<HTMLInputElement>(null);
   const [editing, setEditing] = useState(false),
@@ -3138,6 +3247,17 @@ function TaskCard({
     !!action.dueDate &&
     action.dueDate <
       new Date().toLocaleDateString("sv-SE", { timeZone: "Asia/Shanghai" });
+  const linkedRequirementIndices = Array.isArray(action.requirementIndices)
+    ? Array.from(new Set(action.requirementIndices)).filter(
+        (index) =>
+          Number.isInteger(index) &&
+          index >= 0 &&
+          index < (action.run.result?.requirements?.length || 0),
+      )
+    : [];
+  const invalidRequirementLink =
+    !!action.requirementIndices?.length &&
+    linkedRequirementIndices.length !== action.requirementIndices.length;
   async function save() {
     setSaving(true);
     setError("");
@@ -3171,6 +3291,23 @@ function TaskCard({
       <div className="ag-task-body">
         <h3>{action.title}</h3>
         {sources}
+        {!!linkedRequirementIndices.length && (
+          <div className="ag-task-requirements">
+            <span>明确关联需求</span>
+            {linkedRequirementIndices.map((index) => (
+              <button key={index} onClick={() => onRequirement(index)}>
+                <FileText size={12} />
+                {index + 1}. {action.run.result?.requirements?.[index]?.title}
+                <ArrowUpRight size={12} />
+              </button>
+            ))}
+          </div>
+        )}
+        {invalidRequirementLink && (
+          <p className="ag-task-link-warning">
+            部分需求关联重复或无效，需要核对原始研究记录。
+          </p>
+        )}
         <div className="ag-task-metadata">
           <small>
             来自 {kindLabels[action.run.kind]} · {date(action.run.createdAt)}

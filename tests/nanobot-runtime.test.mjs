@@ -51,6 +51,14 @@ if 'INVALID_SOURCE_TEST' in text: out['claims'][0]['sourceIds']=['does-not-exist
 if 'INVALID_SHAPE_TEST' in text: out['answer']=42
 if 'QUOTED_CLAIM_TEST' in text: out['claims'][0]['citations']=[{'sourceId':'fixture','quote':'样例声明','start':None}]
 if 'BAD_QUOTED_CLAIM_TEST' in text: out['claims'][0]['citations']=[{'sourceId':'fixture','quote':'不存在的原始引文','start':None}]
+if 'BASIS_TEST' in text:
+ basis={'claimIndices':[0],'projectFields':['goal'],'memoryIds':['fixture-memory'],'assumptions':['尚未证明用户价值'],'verification':['开展受控任务验证']}
+ out['requirements']=[{'id':'R1','title':'需求一','description':'明确论证候选需求','sourceIds':['fixture'],'acceptance':['保留依据'], 'basis':basis},{'id':'R1','title':'需求二','description':'重复模型ID按索引区分','sourceIds':['fixture'],'acceptance':['明确范围'],'basis':None}]
+ out['actions']=[{'id':'A1','title':'验证第二条需求','done':False,'sourceIds':['fixture'],'requirementIndices':[1]}]
+ if 'BAD_CLAIM_BASIS_TEST' in text: basis['claimIndices']=[42]
+ if 'BAD_MEMORY_BASIS_TEST' in text: basis['memoryIds']=['inactive-memory']
+ if 'BAD_ACTION_BASIS_TEST' in text: out['actions'][0]['requirementIndices']=[2]
+ if 'DUPLICATE_BASIS_TEST' in text: basis['projectFields']=['goal','goal']
 if 'INVALID_SHAPE_TEST' not in text:
  jsonschema.validate(out,schema)
  missing=json.loads(json.dumps(out)); del missing['claims'][0]['citations']
@@ -127,6 +135,18 @@ print(json.dumps({'type':'turn.completed',**({} if 'UNREPORTED_USAGE_TEST' in te
     assert.ok(inventedQuote.raw.output.includes("不存在的原始引文"));
     const legacy = await runNanobot({ ...input, sessionId: "legacy-shape", prompt: "LEGACY_SHAPE_TEST" });
     assert.deepEqual(legacy.claims[0].citations, [], "Parsing archived legacy output is separate from strict new provider schema");
+    const basisInput = { ...input, project: { ...project, memory: [{ id: "fixture-memory", text: "当前确认记忆", status: "active" }, { id: "inactive-memory", text: "停用记忆", status: "inactive" }] } };
+    const basis = await runNanobot({ ...basisInput, sessionId: "basis", prompt: "BASIS_TEST" });
+    assert.deepEqual(basis.requirements[0].basis.claimIndices, [0]);
+    assert.equal(basis.requirements[1].basis, null, "Legacy/unestablished basis cannot be guessed from overlapping source IDs");
+    assert.deepEqual(basis.actions[0].requirementIndices, [1], "References use array indices even with duplicate model IDs");
+    for (const flag of ["BAD_CLAIM_BASIS_TEST", "BAD_MEMORY_BASIS_TEST", "BAD_ACTION_BASIS_TEST", "DUPLICATE_BASIS_TEST"]) {
+      await assert.rejects(runNanobot({ ...basisInput, sessionId: flag.toLowerCase(), prompt: flag }), error => {
+        assert.ok(error.raw?.output?.includes('"requirements"'), "Invalid linkage output remains in raw records");
+        assert.equal(error.raw.calls.length, 1, "Invalid linkage must not trigger implicit model retries");
+        return true;
+      });
+    }
     const controller = new AbortController();
     let called = false;
     await assert.rejects(runNanobot({ ...input, sessionId: "cancel", prompt: "CANCEL_TEST", signal: controller.signal,

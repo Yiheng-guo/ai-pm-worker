@@ -27,7 +27,7 @@ const recordId = (runId, key) => "claim-review-" + hash(JSON.stringify([runId, k
 
 function sourceFootprint(source) {
   if (!source) return null;
-  return { id: source.id, url: source.url || null, sha256: source.sha256 || null, rawSha256: typeof source.raw === "string" ? hash(source.raw) : null, textSha256: typeof source.text === "string" ? hash(source.text) : null, fetchedAt: source.fetchedAt || null, status: source.status || null, truncated: !!source.truncated, reusedFrom: source.reusedFrom || null, reusedAt: source.reusedAt || null };
+  return { id: source.id, url: source.url || null, sha256: source.sha256 || null, rawSha256: typeof source.raw === "string" ? hash(source.raw) : null, textSha256: typeof source.text === "string" ? hash(source.text) : null, fetchedAt: source.fetchedAt || null, status: source.status || null, truncated: !!source.truncated, reusedFrom: source.reusedFrom || null, reusedAt: source.reusedAt || null, ...(source.extraction ? { extraction: source.extraction } : {}) };
 }
 export function claimFingerprint(run, claim) {
   const ids = [...new Set(claim.sourceIds || [])].sort();
@@ -71,7 +71,7 @@ export function validateQuote(run, claim, citation) {
   return {
     sourceId, quote, matched: true, validation: "literal-only",
     locator: { unit: "utf16-code-unit", start: selected, end: selected + quote.length, occurrenceCount: positions.length, occurrenceIndex: positions.indexOf(selected) + 1 },
-    sourcePin: { url: source.url, retrievalUrl: source.retrievalUrl || source.url, sha256: source.sha256, textSha256: hash(source.text), fetchedAt: source.fetchedAt || null, publishedAt: null, publishedDateKnown: false, truncated: !!source.truncated, reusedFrom: source.reusedFrom || null, reusedAt: source.reusedAt || null, ageAtReuseSeconds: source.ageAtReuseSeconds ?? null },
+    sourcePin: { url: source.url, retrievalUrl: source.retrievalUrl || source.url, sha256: source.sha256, textSha256: hash(source.text), fetchedAt: source.fetchedAt || null, publishedAt: null, publishedDateKnown: false, truncated: !!source.truncated, ...(source.extraction ? { extraction: source.extraction } : {}), reusedFrom: source.reusedFrom || null, reusedAt: source.reusedAt || null, ageAtReuseSeconds: source.ageAtReuseSeconds ?? null },
   };
 }
 function quoteChecks(run, claim) {

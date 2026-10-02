@@ -112,12 +112,21 @@ class Claim(Shape):
     citations: list[EvidenceCitation] = Field(default_factory=list, max_length=8)
 
 
+class RequirementBasis(Shape):
+    claimIndices: list[int] = Field(default_factory=list, max_length=32)
+    projectFields: list[Literal["background", "goal", "constraints"]] = Field(default_factory=list, max_length=3)
+    memoryIds: list[str] = Field(default_factory=list, max_length=30)
+    assumptions: list[str] = Field(default_factory=list, max_length=20)
+    verification: list[str] = Field(default_factory=list, max_length=20)
+
+
 class Requirement(Shape):
     id: str
     title: str
     description: str
     sourceIds: list[str]
     acceptance: list[str]
+    basis: RequirementBasis | None = None
 
 
 class Action(Shape):
@@ -125,6 +134,7 @@ class Action(Shape):
     title: str
     done: Literal[False]
     sourceIds: list[str]
+    requirementIndices: list[int] = Field(default_factory=list, max_length=32)
 
 
 class MemoryUpdate(Shape):
@@ -220,7 +230,7 @@ sources 中带 reusedFrom 或 reusedAt 的条目是用户选择的已保存快�
 用 inference 表达推断，并说明所依赖的事实、成本和局限。不要编造用户、数字、测试成绩或真实账单。
 若 kind=recall，只回答项目背景/用户确认的记忆和历史事实，网页 claims 可以为空；不要生成虚假的来源。
 形成可审查的中文研究判断与需求草稿，验收项 acceptance 必须是字符串数组。
-需求应引用证据、说明价值与成本，actions 是待跟进的行动；完成标记一律 false。
+需求应引用证据、说明价值与成本，并明确 basis：claimIndices 引用本次 claims 数组的从 0 开始索引，projectFields 只选择 background/goal/constraints，memoryIds 只引用当前用户确认的记忆 ID；assumptions 写明尚待验证的价值假设，verification 写验证方法。不能因为同一 sourceId 自动推断需求论证成立。basis 不能建立时为 null 并说明不足，不编造关联。actions 是待跟进的行动，requirementIndices 只引用本次 requirements 从 0 开始索引，没有关联时为空数组；完成标记一律 false。
 memoryUpdates 只提议有证据的项目记忆，用户审核前不会成为持久事实，不提议个人身份推断。
 返回单个 JSON 对象，必须完全符合指定 schema，不输出 Markdown 代码围栏。
 """
@@ -531,6 +541,20 @@ async def execute(payload: dict[str, Any]) -> dict[str, Any]:
             if isinstance(item, Claim) and item.kind == "fact" and not item.sourceIds:
                 item.kind = "unknown"
                 raw["warnings"].append("缺少有效来源的事实主张已改为 unknown")
+        memory_ids = {str(m["id"]) for m in current_project["memory"] if isinstance(m, dict) and m.get("id")}
+        for requirement in parsed.requirements:
+            if requirement.basis is None:
+                continue  # Old output has no explicit basis; never infer one.
+            basis = requirement.basis
+            if any(index < 0 or index >= len(parsed.claims) for index in basis.claimIndices):
+                raise CitationError("Invalid requirement claim index")
+            if any(mid not in memory_ids for mid in basis.memoryIds):
+                raise CitationError("Invalid current project memory reference")
+            if len(set(basis.claimIndices)) != len(basis.claimIndices) or len(set(basis.memoryIds)) != len(basis.memoryIds) or len(set(basis.projectFields)) != len(basis.projectFields):
+                raise CitationError("Duplicate requirement basis reference")
+        for action in parsed.actions:
+            if any(index < 0 or index >= len(parsed.requirements) for index in action.requirementIndices) or len(set(action.requirementIndices)) != len(action.requirementIndices):
+                raise CitationError("Invalid action requirement index")
         # Durable memory updates are deliberately not applied here.
         result = parsed.model_dump()
         result.update({"usage": usage, "raw": raw, "engine": {
@@ -548,7 +572,7 @@ async def execute(payload: dict[str, Any]) -> dict[str, Any]:
         save_json(record_path, {"failedAt": now(), "status": "cancelled" if isinstance(exc, asyncio.CancelledError) else "failed",
                                "raw": raw, "usage": usage, "errorType": type(exc).__name__})
         if isinstance(exc, asyncio.CancelledError): safe_message = "任务已取消，已有输入与输出记录已保留。"
-        elif isinstance(exc, CitationError): safe_message = "模型引用了不存在的证据 ID；原始输出已保留，不能作为完成结果。"
+        elif isinstance(exc, CitationError): safe_message = "模型引用了不存在的证据 ID、主张、需求或当前记忆，或提供了重复关联；原始输出已保留，不能作为完成结果。"
         elif isinstance(exc, ProviderError): safe_message = "真实模型调用失败：" + safe_diagnostic(exc, secrets)
         elif type(exc).__name__ == "ValidationError":
             issues = exc.errors(include_input=False, include_url=False)

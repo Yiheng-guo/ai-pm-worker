@@ -37,6 +37,11 @@ export type ClaimCitation = {
     publishedAt: null;
     publishedDateKnown: false;
     truncated?: boolean;
+    extraction?: {
+      providedChars?: number;
+      extractedChars?: number;
+      coverage?: string;
+    };
     reusedFrom?: { runId?: string; originalRunId?: string } | null;
     reusedAt?: string | null;
   };
@@ -373,7 +378,9 @@ export default function ClaimReview({
         {(citation.sourcePin?.truncated || citation.sourcePin?.reusedFrom) && (
           <p className="ag-audit-capture-warning">
             {citation.sourcePin.truncated
-              ? "抓取存档曾被截断，原文可能不完整。"
+              ? citation.sourcePin.extraction
+                ? "提供的提取正文因长度上限被裁剪，摘录不代表覆盖全部正文。"
+                : "旧存档带有覆盖范围标记，可能涉及 HTML 提取或正文裁剪，实际覆盖范围需要核对。"
               : ""}
             {citation.sourcePin.reusedFrom
               ? `历史证据复用${citation.sourcePin.reusedAt ? `于 ${time(citation.sourcePin.reusedAt)}` : ""}，未重新验证当前网页。`

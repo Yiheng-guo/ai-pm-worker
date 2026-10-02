@@ -69,8 +69,24 @@ function plainHtml(raw) {
     .replace(/<\/(p|div|li|h[1-6]|tr)>/gi, "\n")
     .replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&")
     .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"')
-    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Math.min(Number(n), 0x10ffff)))
+    .replace(/&#(\d+);/g, (_, n) => {
+      const code = Number(n);
+      return Number.isInteger(code) && code > 0 && code <= 0x10ffff && !(code >= 0xd800 && code <= 0xdfff) ? String.fromCodePoint(code) : "\uFFFD";
+    })
     .replace(/[ \t]+/g, " ").replace(/\n\s*\n/g, "\n\n").trim();
+}
+export function extractEvidenceText(raw, contentType, maxChars = 35000) {
+  if (typeof raw !== "string" || !Number.isInteger(maxChars) || maxChars < 1) throw new Error("取证文本与长度上限无效。");
+  const html = /html/i.test(contentType || "");
+  const extracted = html ? plainHtml(raw) : raw;
+  let text = extracted.slice(0, maxChars);
+  // A JS character budget uses UTF16 units; never cut a surrogate pair.
+  const last = text.charCodeAt(text.length - 1), next = extracted.charCodeAt(text.length);
+  if (last >= 0xd800 && last <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) text = text.slice(0, -1);
+  return {
+    text, truncated: text.length < extracted.length,
+    extraction: { method: html ? "html-regex-v2" : "plain-text-v1", format: html ? "html-to-text" : "plain-text", rawChars: raw.length, extractedChars: extracted.length, providedChars: text.length, maxChars, offsetUnit: "utf16-code-unit", transformed: extracted !== raw, htmlMarkupRemoved: html, coverage: "captured-extracted-text-only", note: html ? "提取会移除部分标签、导航与脚本；未触发长度截断不代表动态网页内容全部被读取。" : "只反映捕获文本的长度覆盖，不证明来源可靠或时效。" },
+  };
 }
 export async function fetchEvidence(url, signal) {
   const record = { id: randomUUID(), title: url, url, text: "", raw: "", sha256: "", fetchedAt: new Date().toISOString(), status: "failed" };
@@ -85,7 +101,7 @@ export async function fetchEvidence(url, signal) {
     }
     data ||= await readPublic(url, signal);
     record.raw = data.raw;
-    record.text = (/html/.test(data.contentType) ? plainHtml(data.raw) : data.raw).slice(0, 35000);
+    Object.assign(record, extractEvidenceText(data.raw, data.contentType));
     if (record.text.length < 80) throw new Error("页面没有足够可读取的正文。");
     record.title = data.raw.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1]?.trim() ||
       record.text.match(/^#\s+(.+)$/m)?.[1] || github.hostname + github.pathname;
@@ -93,7 +109,6 @@ export async function fetchEvidence(url, signal) {
     record.retrievalUrl = data.retrievalUrl;
     record.sha256 = createHash("sha256").update(record.raw).digest("hex");
     record.status = "fetched";
-    record.truncated = record.text.length < data.raw.length;
   } catch (error) { record.error = error.message; }
   return record;
 }

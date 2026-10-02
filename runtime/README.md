@@ -17,6 +17,10 @@ Node 通过 JSONL 调用 Python。Python 使用真实 nanobot AgentLoop/AgentRun
 
 0.3 的 claims 支持可选 `citations`：sourceId、连续原文 quote 和可选的 UTF16 start。桥接保留模型候选摘录；Node 的 `claim-audit.mjs` 单独验证 SHA 与字面位置，错误摘录仍可追溯。工作空间审阅不修改模型原文，也不由摘录匹配自动决定语义真假。旧结果没有 citations 时继续兼容，显示没有提供摘录。
 
+0.4 的需求可带 `basis`（主张数组索引、项目字段、有效记忆 ID、假设、验证方法），行动用 `requirementIndices` 指向本次需求数组。桥接拒绝越界、重复和无效当前记忆关联，保留原始无效输出而不重试。旧输出的 basis 为 null、行动关联为空时不猜测论证。数组索引从 0 开始，不依赖模型重复的 R1/A1 标签。
+
+生成用 provider schema 与历史解析不同：严格新 schema 所有对象属性均 required，默认数组需要明确为空，nullable 字段需要明确 null；Pydantic 历史解析继续接受缺省字段。fixture 通过独立 JSON Schema 验证器检查两种边界。
+
 本机 Codex 通过现有登录调用；不读取用户 config，禁用 shell、网页搜索、MCP apps、plugins、hooks、computer use 等，设置 read-only sandbox。检索在 Node 的公共证据工具完成，不把网页中的指令执行。每个 Codex prompt 保存在 `.runtime/records/.../call-N/prompt.txt`（0600），以普通文件作为 stdin；stdout/stderr 独立消费，避免大管道 BrokenPipe 隐藏真正诊断。首次 attempt 先存 pending `call.json`，异常也会补齐退出码和脱敏诊断。
 
 Codex 的网络重连可能输出 `error` 事件；后续 turn.completed、非空输出与 exit 0 才确认成功。AgentRunner 无论界面是否流式，都调用 chat_stream_with_retry。桥接覆盖默认 chat_stream 回退，避免上游 90 秒 stream-idle wait_for 提前取消阻塞 CLI 并生成可重试 TimeoutError；CLI 的总期限为 600 秒。适配器终态失败会禁止 nanobot 再隐式启动相同调用，重试由用户主动发起。取消会终止本次 Python/Codex 进程组并保留已有记录。
