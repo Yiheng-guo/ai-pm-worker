@@ -11,7 +11,8 @@ import { z } from "zod";
 import { createStore } from "./store.mjs";
 import { requestSchema, workerSchema, fragmentSchema } from "./schemas.mjs";
 import { buildPrompt } from "./prompts.mjs";
-import { runModel } from "./provider.mjs";
+import { runModel, modelTrace } from "./provider.mjs";
+import { createAgentRouter } from "./agent-router.mjs";
 import {
   workerTemplates,
   factoryTemplates,
@@ -121,7 +122,7 @@ let apiKey = "";
 const controllers = new Map();
 const settingsDefaults = {
   id: "settings",
-  provider: "demo",
+  provider: process.env.DEFAULT_PROVIDER || "demo",
   baseUrl: process.env.OPENAI_BASE_URL || "https://api.openai.com/v1",
   model: process.env.OPENAI_MODEL || "",
 };
@@ -315,6 +316,8 @@ async function createJob(body, projectId = null) {
       if (mode === "factory" && !/<html[\s>]/i.test(result.code))
         throw new Error("模型没有返回完整 HTML 应用，请重试。");
       job.result = result;
+      const trace = modelTrace(result);
+      if (trace) { job.usage = trace.usage; job.modelTrace = trace; }
       if (mode === "factory") {
         const project = previous || {
           id: randomUUID(),
@@ -341,13 +344,18 @@ async function createJob(body, projectId = null) {
       job.completedAt = new Date().toISOString();
       await event(job, "交付物已校验并保存");
     } catch (e) {
+      if (e.raw) { job.modelTrace = e.raw; job.usage = e.usage || e.raw.usage; }
       if (!controller.signal.aborted) {
         job.status = "failed";
         job.error =
           e instanceof z.ZodError
             ? "模型返回格式不符合要求，请重试。"
             : e.message;
-        await event(job, "任务未完成，已保留输入，可重试");
+        job.completedAt = new Date().toISOString();
+        await event(job, "任务未完成，已保留输入与可用模型记录");
+      } else if (e.raw) {
+        const saved = await store.get(job.id, "job");
+        if (saved) await store.put("job", { ...saved, usage: job.usage, modelTrace: job.modelTrace });
       }
     } finally {
       controllers.delete(job.id);
@@ -450,6 +458,8 @@ app.get("/api/projects/:id/download", async (req, res) => {
     .type("application/zip")
     .send(await zip.generateAsync({ type: "nodebuffer" }));
 });
+const agent = await createAgentRouter({ store, settings, root, cloud });
+app.use("/api/agent", agent.router);
 if (!cloud && existsSync(join(root, "dist"))) {
   app.use(express.static(join(root, "dist")));
   app.get("/{*splat}", async (req, res) => {
@@ -473,6 +483,7 @@ if (!cloud) {
     console.log(`${product.name} → http://127.0.0.1:${port}`),
   );
   function shutdown() {
+    agent.shutdown();
     for (const c of controllers.values()) c.abort();
     server.close(() => {
       store.close();

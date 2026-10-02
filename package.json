@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "亦伴 — 面向 AI 产品经理的办公 Worker",
+  "description": "亦伴 — 基于 nanobot 的个人产品研究助理，连接证据、需求与造物原型",
   "engines": {
     "node": "24.x"
   },
@@ -12,7 +12,10 @@
     "build": "tsc --noEmit && vite build",
     "start": "node server/index.mjs",
     "test": "node --test tests/*.test.mjs",
-    "format": "prettier --write src server tests api"
+    "format": "prettier --write src server tests api",
+    "agent:setup": "bash runtime/setup.sh",
+    "agent:start": "node scripts/start-agent.mjs",
+    "agent:evaluate": "node scripts/evaluate-agent.mjs"
   },
   "dependencies": {
     "@napi-rs/canvas": "^1.0.9",

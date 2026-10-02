@@ -46,6 +46,7 @@ import {
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import "./style.css";
+import AgentApp from "./AgentApp";
 type Template = {
   id: string;
   title: string;
@@ -1930,4 +1931,4 @@ function LoginScreen({
     </div>
   );
 }
-createRoot(document.getElementById("root")!).render(<App />);
+createRoot(document.getElementById("root")!).render(new URLSearchParams(location.search).has("legacy") ? <App /> : <AgentApp />);

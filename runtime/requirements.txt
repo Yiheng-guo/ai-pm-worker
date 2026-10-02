@@ -1,0 +1,2 @@
+# Exact upstream source used by the bridge. setup.sh installs this revision editable.
+nanobot-ai @ git+https://github.com/HKUDS/nanobot.git@d0d0a44e57632c3d269e511339cff7ddb698e62e

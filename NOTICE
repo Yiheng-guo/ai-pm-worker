@@ -10,3 +10,5 @@ This distribution includes modular adaptations of:
 Modifications: source-grounded Chinese PM deliverables, bounded HTML/PRD artifacts,
 independent local/cloud workspaces, task persistence, versioning and export.
 These projects are not affiliated with or endorsed by the upstream authors.
+
+Personal Agent runtime: HKUDS/nanobot 0.3.5, commit d0d0a44e57632c3d269e511339cff7ddb698e62e (MIT). Upstream license preserved in third_party/nanobot/LICENSE. The original additions are the bounded research adapter, evidence provenance, project memory UI, evaluation workflow, and Product Foundry integration. Hermes Agent and Rowboat are design references; their runtime code is not bundled.

@@ -63,8 +63,8 @@ export async function createStore(dir) {
       );
       return item;
     },
-    async get(id, type) {
-      const row = db.prepare("SELECT data FROM items WHERE id=?").get(id);
+    async get(id, type = "settings") {
+      const row = db.prepare("SELECT data FROM items WHERE id=? AND type=?").get(id, type);
       return row ? JSON.parse(row.data) : null;
     },
     async list(type) {

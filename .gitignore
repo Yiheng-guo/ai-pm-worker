@@ -6,6 +6,8 @@ data/
 !.env.example
 playwright-report/
 test-results/
+.runtime/
+.cache/
 .DS_Store
 *.log
 
@@ -14,3 +16,6 @@ test-results/
 .env*
 
 !.env.example
+
+__pycache__/
+*.pyc

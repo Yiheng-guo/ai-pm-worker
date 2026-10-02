@@ -1,87 +1,64 @@
-# 亦伴 · AI PM Worker
+# 亦伴 · 个人产品助理
 
-面向 **AI 产品经理** 的办公 Worker。把需求和原始资料变成可评审的文档、可追溯的分析和可执行的行动项。
+懂项目背景的 AI 产品研究助理。用 nanobot 执行研究，连接造物验证原型，在一个工作台里查看项目背景、对话、证据、需求、原型、待办和真实评测。
 
-[打开线上工作空间](https://ai-pm-worker.vercel.app) · [开源调研与二开说明](docs/OPEN_SOURCE_RESEARCH.md) · [实际访谈分析样例](docs/examples/interview-analysis.md)
+## 你能完成什么
 
-> 这是独立项目，拥有自己的服务、数据和部署。产品工厂位于另一个仓库 [Product Foundry](https://github.com/Yiheng-guo/product-foundry)，无需安装它即可使用 Worker。
+- 建立项目档案，保存目标、范围、约束和用户确认的项目记忆；可以纠正过时信息。
+- 从公开 HTTPS 来源搜集资料，保存原始页面、提取正文、抓取时间和 SHA256。
+- 结合项目背景形成竞品价值判断、带来源的需求草稿和验收条件；明确事实、推断和未知。
+- 从需求进入造物，生成隔离预览的前端原型，保留版本并导出源码。
+- 保存行动项完成状态，跨会话继续研究；候选记忆需确认后才能进入项目档案。
+- 查看旧版与新版的实测对比、调用消耗和失败记录，下载完整证据与运行包。
 
-## 可以做什么
+旧版文档 Worker 保留在 `/?legacy=1`，说明见 [原版文档](docs/LEGACY_WORKER.md)。
 
-- **PRD**：问题、用户、工作流、AI 行为边界、验收标准。
-- **访谈洞察**：痛点、证据、候选需求、下一轮验证问题。
-- **竞品研究**：基于你提供的资料比较产品，区分事实和假设。
-- **AI 评测方案**：评分细则、测试用例、Bad Case 分类；不会伪造实测结果。
-- **产品周报、会议决策记录**：整理材料与待办。
-- 上传文字版 PDF、DOCX、Markdown、TXT、CSV、JSON。
-- 任务执行记录、取消、重试、Markdown 导出、行动项勾选与结果归档。
+## 本机启动
 
-## 本机运行
+需要 Node.js 24、Git、uv 和 Codex CLI。本机模型路线使用已登录的 Codex；需要先执行 `codex login`。nanobot 固定为 0.3.5、提交 `d0d0a44e57632c3d269e511339cff7ddb698e62e`，安装脚本用 uv 建立独立 Python 3.11 环境。
 
-需要 Node.js 24（最低 22.13）。
+解压交付的源码包，确保 `ai-pm-worker` 与 `product-foundry` 位于同一个目录，然后执行：
 
 ```bash
-git clone https://github.com/Yiheng-guo/ai-pm-worker.git
-cd ai-pm-worker
+cd product-foundry
 npm ci
 npm run build
-npm start
+cd ../ai-pm-worker
+npm ci
+npm run agent:setup
+npm run build
+npm run agent:start
 ```
 
-打开 **http://127.0.0.1:4310**。开发模式为 `npm run dev`，前端地址 **http://127.0.0.1:4311**。
+打开 **http://127.0.0.1:4310**。造物服务在 **http://127.0.0.1:4320**；启动脚本会同时启动两个服务。已有环境可双击 `启动亦伴.command`。造物可用 `FOUNDRY_DIR` 指定其他本机目录。
 
-在「设置与模型」选择：
+本机开发分支为 `codex/yiban-personal-agent`；造物计量改造分支为 `codex/yiban-prototype-metering`。源码包内含两个对应项目。公开仓库原版不包含本次改造，不能仅通过克隆默认分支获得这次交付。
 
-| 方式 | 用途 |
-|---|---|
-| 演示模式 | 返回明确标注的内置模板，不调用 AI，不分析材料。 |
-| 本机 Codex | 需要安装 Codex CLI 并执行 `codex login`；使用本机登录账号的额度，任务只读运行。 |
-| API 模型 | 填写 OpenAI Chat Completions 兼容接口地址、模型 ID、API Key。需支持 JSON 输出。 |
+## 模型、数据和边界
 
-本地任务保存在 `data/workspace.sqlite`；该目录不进入 Git。API Key 默认只保存在进程内存，重启后重新填写；也可以用环境变量配置。模型 API 默认最长 4 分钟，Codex 本机调用最长 10 分钟。任务失败会保留输入。
+- 本机 Codex 登录已支持真实调用；API 路线提供代码接入，实际可用性需按服务商验证。模型变更对新任务生效。
+- 新工作台的数据默认在 `data/personal-agent/workspace.sqlite`，与旧工作空间分开；nanobot 私有会话与审计在 `.runtime/`。二者均不进入 Git。
+- 源码包含当前两个公开项目的 README 背景，不会自动扫描用户其他私人目录。分享运行包前检查项目资料。
+- 证据正文作为不可信资料，不能授权命令或工具。研究模型的 Shell、浏览器、插件等执行工具被禁用，公开取证由有网络边界的外层服务完成。
+- 模型建议的记忆只作为候选；事实引用ID会校验，但引用存在不代表内容已被核实。
+- Token 记录来自真实返回，缺失值保留为空。Codex 订阅调用没有独立账单时，金额不能直接换算，也不显示为零成本。
+- 交付的是单用户本机产品与浏览器前端原型；不承诺电脑关机后执行任务，也没有多人、支付或自动部署业务系统。
+- 原有 Vercel 文档工作台仍可独立使用。新的 nanobot 常驻执行层没有作为无服务器函数部署；云端版需单独配置运行环境和模型授权。
 
-```bash
-OPENAI_API_KEY=... OPENAI_BASE_URL=https://api.openai.com/v1 OPENAI_MODEL=... npm start
-```
-
-不要将真实密钥写入版本库。环境变量用于配置，不代表模型可用性已自动验证。
-
-## Vercel 部署
-
-项目已包含 `api/index.mjs` 和 `vercel.json`。线上使用独立的 **private Vercel Blob** 保存资料、任务和设置。
-
-```bash
-vercel link
-vercel blob create-store ai-pm-worker-private --access private --yes
-vercel env add WORKSPACE_PASSWORD production --sensitive
-vercel --prod
-```
-
-`WORKSPACE_PASSWORD` 使用足够长的随机口令。它既保护登录，也用于加密保存的模型密钥；更换口令后需重新输入模型密钥。`BLOB_READ_WRITE_TOKEN` 由连接私有存储时注入。口令、Blob token、API Key 都不能进入 Git。
-
-线上不能调用用户电脑上的 Codex；请选择 API 模型。未配置时是演示模式。当前账号的 Vercel AI Gateway 测试要求绑定信用卡，未启用该服务。
-
-## 实现与上游
-
-React + TypeScript + Vite；Express + Zod；本地 SQLite / 线上 Vercel 私有 Blob；Mammoth + PDF Parse；标准 OpenAI 兼容 API / 本机 Codex。
-
-改造了 LangChain OpenWork 的系统提示行为边界，并保留原始来源与 MIT 许可证；结构化产物 schema 借鉴并改造 E2B Fragments，保留 Apache-2.0 许可证。这是**模块级二开**，不是完整上游产品的换皮 fork。见 [NOTICE](NOTICE) 和 [调研记录](docs/OPEN_SOURCE_RESEARCH.md)。
-
-## 验证
+## 验证与交付
 
 ```bash
 npm test
 npm run build
+npm run agent:evaluate -- --data-dir data/personal-agent
 ```
 
-测试覆盖登录保护、跨站拒绝、输入校验、中文文件读取、真实持久化、导出、行动项更新、API 失败处理、已删除资料校验和密钥加密。人工验收包含本机 Codex 真实访谈分析。
+评测会实际调用模型并消耗账号额度，请阅读 [评测协议](docs/EVALUATION_PROTOCOL.md)。不同样本的运行完成、任务验收、事实抽查和记忆结果分别记录，不用一个成功演示推出普遍可靠性。
 
-## 当前边界
+- [产品与架构说明](docs/PERSONAL_AGENT.md)
+- [连续演示指南](docs/DEMO_GUIDE.md)
+- [实测协议与指标定义](docs/EVALUATION_PROTOCOL.md)
+- [运行层与限制](runtime/README.md)
+- [后续开发说明](docs/DEVELOPMENT.md)
 
-单用户工作空间，无多人账号、定时调度和自动消息发送。资料最多 8 MB（Vercel 请求体限制下建议不超过 4 MB）、累计最多 65,000 字符；扫描 PDF 需要先 OCR。竞品分析没有内置全网搜索。AI 输出仍需产品经理复核。线上单页列表当前最多 500 条，适合个人原型工作空间，不是企业文档仓库。
-
-源代码按 Apache-2.0 发布；第三方材料遵循各自许可证。
-
-## 公开展示与私有工作空间
-
-未登录可浏览工作台、模板和预置虚构示例，并下载示例。公开数据来自独立静态 fixture，不读取用户存储。私人资料、个人生成记录、模型配置、上传与生成操作仍需工作空间口令。点击“登录工作空间”进入私人工作区；取消登录可返回公开体验。
+许可证 Apache-2.0；已有 OpenWork / E2B Fragments 及 nanobot 的许可与来源记录保留于 `NOTICE`、`third_party/`。Hermes 和 Rowboat 是机制与体验参考，没有捆绑它们的运行时。
