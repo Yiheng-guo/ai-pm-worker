@@ -7,6 +7,7 @@ import JSZip from "jszip";
 import { getRuntimeStatus, runNanobot } from "./nanobot-runtime.mjs";
 import { discoverSources, fetchEvidence } from "./evidence.mjs";
 import { prepareMemoryProject, requireMemoryRevision, replaceMemory, changeMemory, addMemory, restoreMemory, runtimeProject } from "./project-memory.mjs";
+import { createClaimAudit, projectClaimAudit } from "./claim-audit.mjs";
 
 const now = () => new Date().toISOString();
 const memorySchema = z.object({ id: z.string().min(1), text: z.string().min(1).max(2000), source: z.string().max(300).default("用户确认"), updatedAt: z.string().default(now) });
@@ -70,6 +71,7 @@ export async function createAgentRouter({ store, settings, root, cloud, runner =
     if (!run) throw Object.assign(new Error("任务不存在。"), { status: 404 });
     return run;
   }
+  const claimAudit = createClaimAudit({ store, getRun: findRun, isSaving: id => controllers.has(id) });
   async function event(run, message) {
     run.stage = message;
     run.events.push({ at: now(), message });
@@ -94,11 +96,12 @@ export async function createAgentRouter({ store, settings, root, cloud, runner =
   router.get("/bootstrap", async (req, res) => {
     const config = await settings();
     const compact = req.query.full !== "1" && req.query.compact !== "0";
-    const [projects, runs, evaluations, runtime] = await Promise.all([
-      store.list("research-project"), store.list("agent-run"), store.list("evaluation"), status(),
+    const [projects, runs, evaluations, runtime, reviews] = await Promise.all([
+      store.list("research-project"), store.list("agent-run"), store.list("evaluation"), status(), store.list("claim-review"),
     ]);
+    const projectedRuns = runs.map(run => ({ ...run, claimAuditSummary: projectClaimAudit(run, reviews.filter(r => r.runId === run.id && r.projectId === run.projectId)).summary }));
     res.json({
-      projects: projects.map(p => { const prepared = prepareMemoryProject(p); if (!compact) return prepared; const { memoryHistory, ...summary } = prepared; return summary; }), runs: compact ? runs.map(compactRun) : runs.map(({ raw, sources, ...run }) => ({ ...run, sources: (sources || []).map(({ raw, ...s }) => s) })),
+      projects: projects.map(p => { const prepared = prepareMemoryProject(p); if (!compact) return prepared; const { memoryHistory, ...summary } = prepared; return summary; }), runs: compact ? projectedRuns.map(compactRun) : projectedRuns.map(({ raw, sources, ...run }) => ({ ...run, sources: (sources || []).map(({ raw, ...s }) => s) })),
       evaluations: compact ? evaluations.map(compactEvaluation) : evaluations, runtime, compact,
       settings: { provider: config.provider, baseUrl: config.baseUrl, model: config.model, hasApiKey: !!(config.apiKey || process.env.OPENAI_API_KEY), cloud },
     });
@@ -356,7 +359,9 @@ export async function createAgentRouter({ store, settings, root, cloud, runner =
     finally { if (key) pendingKeys.delete(key); }
   }
   router.post("/runs", async (req, res) => res.status(202).json(await start(req.body, req)));
-  router.get("/runs/:id", async (req, res) => res.json(await findRun(req.params.id)));
+  router.get("/runs/:id", async (req, res) => { const run = await findRun(req.params.id); res.json({ ...run, claimAudit: await claimAudit.forRun(run) }); });
+  router.get("/runs/:id/claims", async (req, res) => res.json(await claimAudit.forRun(await findRun(req.params.id))));
+  router.post("/runs/:id/claims/:key/review", async (req, res) => res.json(await claimAudit.review(req.params.id, req.params.key, req.body)));
   router.post("/projects/:id/recall", async (req, res) => res.status(202).json(await start({ ...req.body, projectId: req.params.id, kind: "recall" }, req)));
   router.post("/runs/:id/prototype", async (req, res) => {
     const parent = await findRun(req.params.id);
@@ -392,6 +397,7 @@ export async function createAgentRouter({ store, settings, root, cloud, runner =
     zip.file("result.md", run.result?.answer || run.error || "任务尚未完成");
     zip.file("usage.json", JSON.stringify(run.usage, null, 2));
     zip.file("events.json", JSON.stringify(run.events, null, 2));
+    zip.file("claim-reviews.json", JSON.stringify(await claimAudit.forRun(run), null, 2));
     for (const source of run.sources) {
       zip.file("evidence/" + source.id + ".txt", source.raw || source.text);
       zip.file("evidence/" + source.id + ".json", JSON.stringify({ ...source, raw: undefined, text: undefined }, null, 2));

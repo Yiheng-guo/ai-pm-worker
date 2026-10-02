@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import type { ClaimCitation } from "./ClaimReview";
 import {
   ArrowDownToLine,
   ArrowLeft,
@@ -47,6 +48,7 @@ import {
   Box,
 } from "lucide-react";
 import "./agent.css";
+const ClaimReview = lazy(() => import("./ClaimReview"));
 
 type Page =
   | "overview"
@@ -208,6 +210,13 @@ type Boot = {
   settings: Settings;
 };
 type SourceRef = Source & { runId: string; key: string };
+type QuoteLocation = {
+  sourceKey: string;
+  start: number;
+  end: number;
+  sha256: string;
+  textSha256?: string;
+};
 
 const pages: {
   id: Page;
@@ -398,6 +407,12 @@ export default function AgentApp() {
     [prototypeTab, setPrototypeTab] = useState("preview"),
     [evalId, setEvalId] = useState("");
   const [selectedSourceIds, setSelectedSourceIds] = useState<string[]>([]);
+  const [quoteLocation, setQuoteLocation] = useState<QuoteLocation | null>(
+    null,
+  );
+  const [quoteValidation, setQuoteValidation] = useState<
+    "none" | "loading" | "valid" | "invalid"
+  >("none");
   const [runDetails, setRunDetails] = useState<
     Record<string, { fingerprint: string; run: Run }>
   >({});
@@ -415,8 +430,10 @@ export default function AgentApp() {
     error: "",
   });
   const [detailReload, setDetailReload] = useState(0);
+  const [claimAuditRefresh, setClaimAuditRefresh] = useState(0);
   const composer = useRef<HTMLTextAreaElement>(null),
-    contentRef = useRef<HTMLElement>(null);
+    contentRef = useRef<HTMLElement>(null),
+    quoteMark = useRef<HTMLElement>(null);
   async function api(path: string, options: RequestInit = {}) {
     const response = await fetch(`/api${path}`, {
       ...options,
@@ -479,6 +496,27 @@ export default function AgentApp() {
     setPage(validPage);
     setRunId(nextRun);
     setSourceKey(nextSource);
+    const start = Number(hash.get("quoteStart")),
+      end = Number(hash.get("quoteEnd")),
+      quoteSha = hash.get("quoteSha");
+    setQuoteLocation(
+      nextSource &&
+        quoteSha &&
+        hash.has("quoteStart") &&
+        hash.has("quoteEnd") &&
+        Number.isInteger(start) &&
+        Number.isInteger(end) &&
+        start >= 0 &&
+        end > start
+        ? {
+            sourceKey: nextSource,
+            start,
+            end,
+            sha256: quoteSha,
+            textSha256: hash.get("quoteTextSha") || undefined,
+          }
+        : null,
+    );
     setProjectMenu(false);
     setMobileNav(false);
     contentRef.current?.scrollTo({ top: 0 });
@@ -497,12 +535,19 @@ export default function AgentApp() {
     const h = new URLSearchParams({ project: projectId, page });
     if (runId) h.set("run", runId);
     if (sourceKey) h.set("source", sourceKey);
+    if (quoteLocation?.sourceKey === sourceKey) {
+      h.set("quoteStart", String(quoteLocation.start));
+      h.set("quoteEnd", String(quoteLocation.end));
+      h.set("quoteSha", quoteLocation.sha256);
+      if (quoteLocation.textSha256)
+        h.set("quoteTextSha", quoteLocation.textSha256);
+    }
     history.replaceState(
       null,
       "",
       `${location.pathname}${location.search}#${h.toString()}`,
     );
-  }, [projectId, page, runId, sourceKey, !!boot]);
+  }, [projectId, page, runId, sourceKey, quoteLocation, !!boot]);
   useEffect(() => {
     if (!boot?.runs.some(isBusy)) return;
     const timer = setInterval(() => {
@@ -575,6 +620,74 @@ export default function AgentApp() {
   const selectedPrototype =
     prototypes.find((r) => r.id === runId) || prototypes[0];
   const selectedSource = sources.find((s) => s.key === sourceKey) || sources[0];
+  useEffect(() => {
+    if (
+      page !== "evidence" ||
+      !quoteLocation ||
+      quoteLocation.sourceKey !== selectedSource?.key
+    ) {
+      setQuoteValidation("none");
+      return;
+    }
+    const source = selectedSource,
+      location = quoteLocation;
+    if (source.text === undefined) {
+      setQuoteValidation("loading");
+      return;
+    }
+    const text = source.text;
+    const splitsSurrogate = (offset: number) =>
+      offset > 0 &&
+      offset < text.length &&
+      /[\uD800-\uDBFF]/.test(text[offset - 1]) &&
+      /[\uDC00-\uDFFF]/.test(text[offset]);
+    if (
+      source.sha256 !== location.sha256 ||
+      location.end > text.length ||
+      splitsSurrogate(location.start) ||
+      splitsSurrogate(location.end)
+    ) {
+      setQuoteValidation("invalid");
+      return;
+    }
+    if (!location.textSha256) {
+      setQuoteValidation("valid");
+      return;
+    }
+    let cancelled = false;
+    setQuoteValidation("loading");
+    void crypto.subtle
+      .digest("SHA-256", new TextEncoder().encode(text))
+      .then((digest) => {
+        if (!cancelled) {
+          const hash = Array.from(new Uint8Array(digest))
+            .map((byte) => byte.toString(16).padStart(2, "0"))
+            .join("");
+          setQuoteValidation(
+            hash === location.textSha256 ? "valid" : "invalid",
+          );
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setQuoteValidation("invalid");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    page,
+    selectedSource?.key,
+    selectedSource?.sha256,
+    selectedSource?.text,
+    quoteLocation,
+  ]);
+  useEffect(() => {
+    if (quoteValidation === "valid")
+      quoteMark.current?.scrollIntoView({
+        behavior: "smooth",
+        block: "center",
+      });
+  }, [quoteValidation, selectedSource?.key]);
   const evaluationSummary =
     boot?.evaluations.find((e) => e.id === evalId) || boot?.evaluations[0];
   const evaluationFingerprint = evaluationSummary
@@ -692,6 +805,7 @@ export default function AgentApp() {
     setSessionId(crypto.randomUUID());
     setSelectedSourceIds([]);
     setSourceUrls("");
+    setQuoteLocation(null);
   }
   function seed(text: string, recall = false) {
     setPrompt(text);
@@ -702,10 +816,21 @@ export default function AgentApp() {
     if (recall) setShowSources(false);
     setTimeout(() => composer.current?.focus(), 100);
   }
-  function viewSource(id: string, from: Run) {
+  function viewSource(id: string, from: Run, citation?: ClaimCitation) {
     const source = from.sources?.find((s) => s.id === id);
     if (source) {
       setSourceKey(`${from.id}:${id}`);
+      setQuoteLocation(
+        citation?.matched && citation.locator && citation.sourcePin
+          ? {
+              sourceKey: `${from.id}:${id}`,
+              start: citation.locator.start,
+              end: citation.locator.end,
+              sha256: citation.sourcePin.sha256,
+              textSha256: citation.sourcePin.textSha256,
+            }
+          : null,
+      );
       navigate("evidence", from.id);
     } else setToast("这条引用尚未关联到已抓取的证据");
   }
@@ -1094,7 +1219,7 @@ export default function AgentApp() {
             <b>亦伴</b>
             <small>PERSONAL PRODUCT AGENT</small>
           </span>
-          <span className="ag-brand-version">02</span>
+          <span className="ag-brand-version">03</span>
         </a>
         <div className="ag-project-select">
           <button
@@ -1676,7 +1801,16 @@ export default function AgentApp() {
                                   </div>
                                 )}
                                 {!!selectedRun.result?.claims?.length && (
-                                  <details className="ag-claims">
+                                  <details
+                                    className="ag-claims"
+                                    key={selectedRun.id}
+                                    onToggle={(event) => {
+                                      if (event.currentTarget.open)
+                                        setClaimAuditRefresh(
+                                          (value) => value + 1,
+                                        );
+                                    }}
+                                  >
                                     <summary>
                                       核对关键事实与推断
                                       <span>
@@ -1684,28 +1818,41 @@ export default function AgentApp() {
                                       </span>
                                       <ChevronDown size={14} />
                                     </summary>
-                                    <div>
-                                      {selectedRun.result.claims.map(
-                                        (claim, i) => (
-                                          <article key={i}>
-                                            <span
-                                              className={`ag-claim-kind ${claim.kind}`}
-                                            >
-                                              {claim.kind === "fact"
-                                                ? "事实"
-                                                : claim.kind === "inference"
-                                                  ? "推断"
-                                                  : "待核实"}
-                                            </span>
-                                            <p>{claim.text}</p>
-                                            {sourceChips(
-                                              claim.sourceIds,
-                                              selectedRun,
-                                            )}
-                                          </article>
-                                        ),
-                                      )}
-                                    </div>
+                                    <Suspense
+                                      fallback={
+                                        <div className="ag-detail-notice">
+                                          <Loader2
+                                            size={14}
+                                            className="ag-spin"
+                                          />
+                                          正在载入断言审阅工具…
+                                        </div>
+                                      }
+                                    >
+                                      <ClaimReview
+                                        key={selectedRun.id}
+                                        runId={selectedRun.id}
+                                        projectId={selectedRun.projectId}
+                                        sources={selectedRun.sources || []}
+                                        originalClaims={
+                                          selectedRun.result.claims
+                                        }
+                                        request={api}
+                                        refreshKey={claimAuditRefresh}
+                                        onSource={(id, citation) =>
+                                          viewSource(id, selectedRun, citation)
+                                        }
+                                        onRecordsChanged={() => {
+                                          setRunDetails((cache) => {
+                                            const next = { ...cache };
+                                            delete next[selectedRun.id];
+                                            return next;
+                                          });
+                                          setDetailReload((value) => value + 1);
+                                          void refresh();
+                                        }}
+                                      />
+                                    </Suspense>
                                   </details>
                                 )}
                                 {!!selectedRun.result?.memoryUpdates
@@ -2059,7 +2206,10 @@ export default function AgentApp() {
                             className={
                               selectedSource?.key === s.key ? "active" : ""
                             }
-                            onClick={() => setSourceKey(s.key)}
+                            onClick={() => {
+                              setSourceKey(s.key);
+                              setQuoteLocation(null);
+                            }}
                           >
                             <div>
                               <span className="ag-source-domain">
@@ -2158,13 +2308,61 @@ export default function AgentApp() {
                               </p>
                             </div>
                           )}
+                          {quoteValidation !== "none" && (
+                            <div
+                              className={`ag-quote-location-note ${quoteValidation}`}
+                            >
+                              {quoteValidation === "loading" ? (
+                                <Loader2 size={13} className="ag-spin" />
+                              ) : quoteValidation === "valid" ? (
+                                <CheckCircle2 size={13} />
+                              ) : (
+                                <AlertCircle size={13} />
+                              )}
+                              <span>
+                                {quoteValidation === "loading"
+                                  ? "正在核对摘录位置与证据摘要…"
+                                  : quoteValidation === "valid"
+                                    ? "已定位所引用的原文。高亮表示文字位置，不代表断言已被验证。"
+                                    : "摘录位置与当前保存的证据不一致，未应用高亮。请重新核对引用。"}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => setQuoteLocation(null)}
+                              >
+                                清除定位
+                                <X size={12} />
+                              </button>
+                            </div>
+                          )}
                           <div className="ag-original-text">
-                            {selectedSource.text ||
+                            {quoteValidation === "valid" &&
+                            quoteLocation &&
+                            selectedSource.text ? (
+                              <>
+                                {selectedSource.text.slice(
+                                  0,
+                                  quoteLocation.start,
+                                )}
+                                <mark
+                                  ref={quoteMark}
+                                  className="ag-evidence-quote"
+                                >
+                                  {selectedSource.text.slice(
+                                    quoteLocation.start,
+                                    quoteLocation.end,
+                                  )}
+                                </mark>
+                                {selectedSource.text.slice(quoteLocation.end)}
+                              </>
+                            ) : (
+                              selectedSource.text ||
                               (detailState.loading
                                 ? "原文正在载入…"
                                 : detailState.error
                                   ? "完整证据尚未读取，请重试。"
-                                  : "此来源没有可供查看的原文。")}
+                                  : "此来源没有可供查看的原文。")
+                            )}
                           </div>
                         </section>
                       )}
@@ -2898,6 +3096,7 @@ export default function AgentApp() {
             if (projectModal === "new") {
               setRunId("");
               setSourceKey("");
+              setQuoteLocation(null);
               setSessionId(crypto.randomUUID());
             }
             setProjectModal(null);

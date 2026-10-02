@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdir, writeFile, readFile, rm } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, resolve, delimiter } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
@@ -19,6 +19,7 @@ test("real nanobot plumbing: recovered stream, durable sessions, corrected memor
   // persistence remain real; a separate live Codex smoke is recorded privately.
   await writeFile(fake, `#!/usr/bin/env python3
 import json,sys,time,os
+import jsonschema
 from pathlib import Path
 if os.environ.get('CODEX_FIXTURE_EARLY_EXIT'):
  print('startup rejected unknown-fixture-feature; api_key=SHOULD_NEVER_BE_STORED https://user:PRIVATE_PASSWORD@example.com/v1?token=PRIVATE_QUERY',file=sys.stderr)
@@ -27,6 +28,17 @@ if os.environ.get('CODEX_FIXTURE_EARLY_EXIT'):
 text=sys.stdin.read()
 args=sys.argv[1:]
 assert '--disable' in args and 'shell_tool' in args and 'unified_exec' in args
+schema=json.loads(Path(args[args.index('--output-schema')+1]).read_text())
+def check_wire_schema(node):
+ if isinstance(node,dict):
+  assert 'default' not in node
+  if 'properties' in node:
+   assert set(node.get('required',[]))==set(node['properties'])
+   assert node.get('additionalProperties') is False
+  for child in node.values(): check_wire_schema(child)
+ elif isinstance(node,list):
+  for child in node: check_wire_schema(child)
+check_wire_schema(schema)
 outpath=Path(args[args.index('-o')+1])
 outpath.with_suffix('.group.json').write_text(json.dumps({'sameGroup':os.getpgrp()==os.getpgid(os.getppid())}))
 if 'CANCEL_TEST' in text: time.sleep(60)
@@ -34,14 +46,30 @@ if 'SLOW_BLOCKING_PROVIDER_TEST' in text: time.sleep(0.2)
 if 'PROVIDER_FAIL_TEST' in text:
  print(json.dumps({'type':'turn.failed','error':{'message':'fixture failure'}}))
  sys.exit(1)
-out={'answer':'测试运行完成','claims':[{'text':'可追溯的样例声明','sourceIds':['fixture'],'kind':'fact'}], 'valueJudgment':'测试', 'requirements':[], 'actions':[], 'memoryUpdates':[]}
+out={'answer':'测试运行完成','claims':[{'text':'可追溯的样例声明','sourceIds':['fixture'],'kind':'fact','citations':[]}], 'valueJudgment':'测试', 'requirements':[], 'actions':[], 'memoryUpdates':[]}
 if 'INVALID_SOURCE_TEST' in text: out['claims'][0]['sourceIds']=['does-not-exist']
 if 'INVALID_SHAPE_TEST' in text: out['answer']=42
+if 'QUOTED_CLAIM_TEST' in text: out['claims'][0]['citations']=[{'sourceId':'fixture','quote':'样例声明','start':None}]
+if 'BAD_QUOTED_CLAIM_TEST' in text: out['claims'][0]['citations']=[{'sourceId':'fixture','quote':'不存在的原始引文','start':None}]
+if 'INVALID_SHAPE_TEST' not in text:
+ jsonschema.validate(out,schema)
+ missing=json.loads(json.dumps(out)); del missing['claims'][0]['citations']
+ try: jsonschema.validate(missing,schema)
+ except jsonschema.ValidationError: pass
+ else: raise AssertionError('Wire schema accepted missing citations')
+ if out['claims'][0]['citations']:
+  missing=json.loads(json.dumps(out)); del missing['claims'][0]['citations'][0]['start']
+  try: jsonschema.validate(missing,schema)
+  except jsonschema.ValidationError: pass
+  else: raise AssertionError('Wire schema accepted missing nullable start')
+if 'LEGACY_SHAPE_TEST' in text: del out['claims'][0]['citations']
 outpath.write_text(json.dumps(out,ensure_ascii=False))
 print(json.dumps({'type':'error','message':'Reconnecting...'}))
 print(json.dumps({'type':'turn.completed',**({} if 'UNREPORTED_USAGE_TEST' in text else {'usage':{'input_tokens':120,'cached_input_tokens':20,'output_tokens':12}})}))
 `, { mode: 0o700 });
   const before = process.env.CODEX_BIN;
+  const fixturePathEnvironment = process.env.PATH;
+  process.env.PATH = dirname(process.env.NANOBOT_PYTHON || join(root, ".runtime/.venv/bin/python")) + delimiter + (fixturePathEnvironment || "");
   process.env.CODEX_BIN = fake;
   const project = { id: `test-${id}`, name: "测试项目", background: "输入资料", goal: "测试", constraints: [], memory: ["用户确认 OLD_MEMORY"] };
   const input = { project, prompt: "验证运行契约", sources: [{ id: "fixture", title: "测试原文", url: "https://example.com", text: "样例声明" }], settings: { provider: "codex", apiKey: "SHOULD_NEVER_BE_STORED" }, sessionId: "persisted" };
@@ -90,6 +118,15 @@ print(json.dumps({'type':'turn.completed',**({} if 'UNREPORTED_USAGE_TEST' in te
     assert.equal(JSON.stringify(afterRevisionCall.messages).includes("EPOCH_OLD_CURRENT_VALUE"), false, "Old persisted session must not reintroduce a retired value");
     const withinRevision = await runNanobot({ ...input, sessionId: "revision-isolation", project: { ...project, memoryRevision: 2, memory: [{ id: "m", text: "EPOCH_NEW_CURRENT_VALUE" }] } });
     assert.ok(withinRevision.raw.session.previousMessageCount >= 2, "Conversation persists while approved memory revision is unchanged");
+    const quoted = await runNanobot({ ...input, sessionId: "quoted", prompt: "QUOTED_CLAIM_TEST" });
+    assert.equal(quoted.claims[0].citations[0].quote, "样例声明");
+    assert.equal(quoted.claims[0].citations[0].start, null);
+    assert.equal(quoted.claims[0].kind, "fact", "Literal quote presence is not a semantic reclassification");
+    const inventedQuote = await runNanobot({ ...input, sessionId: "invented-quote", prompt: "BAD_QUOTED_CLAIM_TEST" });
+    assert.equal(inventedQuote.claims[0].citations[0].quote, "不存在的原始引文", "Invalid model quote must remain visible for derived anchor checks, not be silently removed");
+    assert.ok(inventedQuote.raw.output.includes("不存在的原始引文"));
+    const legacy = await runNanobot({ ...input, sessionId: "legacy-shape", prompt: "LEGACY_SHAPE_TEST" });
+    assert.deepEqual(legacy.claims[0].citations, [], "Parsing archived legacy output is separate from strict new provider schema");
     const controller = new AbortController();
     let called = false;
     await assert.rejects(runNanobot({ ...input, sessionId: "cancel", prompt: "CANCEL_TEST", signal: controller.signal,
@@ -152,6 +189,8 @@ print(json.dumps({'type':'turn.completed',**({} if 'UNREPORTED_USAGE_TEST' in te
   } finally {
     if (before === undefined) delete process.env.CODEX_BIN;
     else process.env.CODEX_BIN = before;
+    if (fixturePathEnvironment === undefined) delete process.env.PATH;
+    else process.env.PATH = fixturePathEnvironment;
     await rm(testDir, { recursive: true, force: true });
   }
 });

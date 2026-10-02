@@ -4448,3 +4448,526 @@
     padding: 12px;
   }
 }
+
+/* Iteration 03: literal evidence matching and attributed claim review. */
+.ag-claims > .ag-claim-review {
+  padding: 0 16px;
+}
+.ag-audit-intro {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 18px 0 13px;
+  color: #74905e;
+}
+.ag-audit-intro svg {
+  margin-top: 2px;
+}
+.ag-audit-intro b {
+  font-size: 12px;
+  color: #637d50;
+}
+.ag-audit-intro p {
+  font-size: 11px;
+  line-height: 1.75;
+  color: #889878;
+  margin-top: 4px;
+}
+.ag-audit-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  padding: 10px 0 17px;
+  font-size: 10px;
+  color: #8c987f;
+  border-bottom: 1px solid #e5ebdc;
+}
+.ag-audit-summary b {
+  color: #698452;
+  margin-right: 3px;
+  font-weight: 600;
+}
+.ag-audit-summary .invalidated,
+.ag-audit-summary .invalidated b {
+  color: #a28b61;
+}
+.ag-audit-notice {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-top: 12px;
+  color: #718d5c;
+  font-size: 11px;
+}
+.ag-claims article.ag-audit-claim {
+  padding: 20px 0;
+}
+.ag-audit-claim-top {
+  display: flex;
+  gap: 7px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.ag-audit-index {
+  color: #b0baa3;
+  font-size: 10px;
+  letter-spacing: 0.5px;
+  margin-right: 3px;
+}
+.ag-audit-status {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 4px;
+  font-size: 10px;
+  line-height: 1.5;
+  padding: 2px 6px;
+  color: #929c86;
+  background: #f1f4eb;
+}
+.ag-audit-claim-top > .ag-audit-status {
+  margin-left: auto;
+}
+.ag-audit-status.supported {
+  background: #edf4e5;
+  color: #748f56;
+}
+.ag-audit-status.contradicted {
+  background: #f7eae3;
+  color: #a1775e;
+}
+.ag-audit-status.needs-verification,
+.ag-audit-status.invalidated {
+  background: #f5f1e3;
+  color: #a38f60;
+}
+.ag-claims article > p.ag-audit-original {
+  font-size: 12px;
+  line-height: 1.8;
+  color: #687d5c;
+  margin: 11px 0 9px;
+  white-space: pre-wrap;
+}
+.ag-audit-generated {
+  margin-top: 13px;
+  border: 1px solid #e6eddd;
+  border-radius: 6px;
+}
+.ag-claims .ag-audit-generated > summary {
+  padding: 8px 10px;
+  color: #91a07f;
+  font-size: 10px;
+}
+.ag-claims .ag-audit-generated > summary > span {
+  font-size: 10px;
+  color: #9cac8a;
+}
+.ag-audit-hint {
+  font-size: 11px;
+  color: #96a188;
+  line-height: 1.75;
+  margin: 9px 11px 12px !important;
+}
+.ag-audit-citation {
+  padding: 11px 13px;
+  background: #f8faf4;
+  border: 1px solid #e5ecdb;
+  border-radius: 6px;
+  margin: 9px 0;
+  min-width: 0;
+}
+.ag-audit-generated > .ag-audit-citation {
+  margin: 9px 10px;
+}
+.ag-audit-citation > div:first-child {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.ag-audit-citation > div:first-child > span {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  font-size: 10px;
+}
+.ag-audit-citation .matched,
+.ag-quote-match.matched {
+  color: #7d975b;
+}
+.ag-audit-citation .unmatched,
+.ag-quote-match.unmatched {
+  color: #aa8b58;
+}
+.ag-audit-citation > div:first-child > small {
+  color: #a0ac91;
+  font-size: 10px;
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+.ag-audit-citation blockquote {
+  margin: 10px 0 11px;
+  padding: 1px 0 1px 10px;
+  border-left: 2px solid #cfdcbe;
+  color: #7a8a6b;
+  font-size: 11px;
+  line-height: 1.75;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.ag-audit-citation > .ag-text-button {
+  font-size: 10px;
+  margin-top: 9px;
+}
+.ag-audit-capture-warning {
+  color: #ac946a;
+  font-size: 10px;
+  line-height: 1.7;
+  margin-top: 8px !important;
+}
+.ag-audit-pin {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px 13px;
+  color: #9daa8c;
+  font-size: 9px;
+}
+.ag-audit-pin > button {
+  display: inline-flex;
+  gap: 3px;
+  align-items: center;
+  color: #839867;
+  font-size: 10px;
+}
+.ag-audit-current {
+  background: #f3f7ec;
+  border-radius: 6px;
+  padding: 12px 14px;
+  margin-top: 12px;
+}
+.ag-audit-current > div:first-child {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+  font-size: 10px;
+  color: #859a6e;
+}
+.ag-audit-current > div:first-child > span {
+  color: #9aa58d;
+  margin-left: auto;
+}
+.ag-audit-current > p {
+  color: #7d8f6b;
+  font-size: 11px;
+  line-height: 1.75;
+  margin-top: 7px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.ag-audit-current > p.ag-audit-invalidated {
+  color: #ad966c;
+}
+.ag-audit-tools {
+  display: flex;
+  gap: 15px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+.ag-audit-tools > .ag-text-button {
+  font-size: 10px;
+  padding-top: 2px;
+}
+.ag-audit-history {
+  flex: 1;
+  min-width: 140px;
+}
+.ag-claims .ag-audit-history summary {
+  padding: 0;
+  font-size: 10px;
+  color: #9bab88;
+}
+.ag-audit-history section {
+  margin-top: 11px;
+  padding: 12px;
+  border: 1px solid #e5ebdc;
+  border-radius: 6px;
+  background: #fbfcf8;
+}
+.ag-audit-history section > div:first-child {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.ag-audit-history time {
+  color: #a8b29a;
+  font-size: 9px;
+}
+.ag-audit-history section > p {
+  margin-top: 8px;
+  font-size: 11px;
+  color: #8b9b78;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.ag-audit-history section > small {
+  display: block;
+  margin-top: 5px;
+  color: #a7b298;
+  font-size: 9px;
+}
+.ag-audit-editor {
+  margin-top: 17px;
+  padding: 17px;
+  border: 1px solid #dbe6cc;
+  border-radius: 8px;
+  background: #f8faf2;
+}
+.ag-audit-editor h4 {
+  display: flex;
+  gap: 7px;
+  align-items: center;
+  margin-bottom: 15px;
+  color: #749253;
+  font-size: 12px;
+}
+.ag-audit-editor-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 12px;
+}
+.ag-audit-editor-fields > label:last-child {
+  grid-column: 1/-1;
+}
+.ag-audit-editor label:not(.ag-confirm-checkbox) {
+  display: block;
+  font-size: 10px;
+  font-weight: 500;
+  color: #91a278;
+  margin-bottom: 13px;
+}
+.ag-audit-editor input:not([type="checkbox"]),
+.ag-audit-editor select,
+.ag-audit-editor textarea {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
+  padding: 9px 10px;
+  background: white;
+  border: 1px solid #dfe8d3;
+  border-radius: 5px;
+  color: #70895c;
+  font-size: 11px;
+  resize: vertical;
+  font-weight: 400;
+  min-width: 0;
+}
+.ag-audit-editor textarea::placeholder,
+.ag-audit-editor input::placeholder {
+  color: #bac4ae;
+}
+.ag-audit-quote-editor {
+  border-top: 1px solid #e5ebdc;
+  padding-top: 14px;
+  margin-top: 15px;
+}
+.ag-audit-quote-editor > div:first-child {
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  font-size: 10px;
+  color: #8f9f7d;
+}
+.ag-audit-quote-editor > div:first-child > span {
+  color: #a9b399;
+  font-size: 9px;
+}
+.ag-quote-editor {
+  background: #fff;
+  border: 1px solid #e2ead7;
+  border-radius: 6px;
+  margin: 12px 0;
+  padding: 13px;
+}
+.ag-quote-editor-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  color: #a4b191;
+  font-size: 10px;
+  margin-bottom: 10px;
+}
+.ag-quote-editor-head > button {
+  display: flex;
+  align-items: center;
+}
+.ag-quote-editor .ag-audit-pin {
+  margin: -3px 0 13px;
+}
+.ag-quote-match {
+  display: flex;
+  gap: 5px;
+  align-items: flex-start;
+  font-size: 10px;
+  line-height: 1.7;
+  margin: -3px 0 12px;
+}
+.ag-quote-match > svg {
+  margin-top: 3px;
+}
+.ag-quote-match > span {
+  flex: 1;
+}
+.ag-quote-match > button {
+  display: inline-flex;
+  gap: 3px;
+  align-items: center;
+  font-size: 9px;
+  white-space: nowrap;
+}
+.ag-quote-occurrences {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 9px 0 12px;
+}
+.ag-quote-occurrences button {
+  color: #a4b190;
+  border: 1px solid #e5ecd9;
+  border-radius: 4px;
+  padding: 3px 7px;
+  font-size: 9px;
+}
+.ag-quote-occurrences button.selected {
+  background: #eef5e3;
+  border-color: #cbdcba;
+  color: #759454;
+}
+.ag-claims .ag-quote-search summary {
+  padding: 5px 0 3px;
+  color: #9caf7f;
+  font-size: 10px;
+}
+.ag-quote-search > label {
+  margin-top: 10px;
+}
+.ag-quote-search > div {
+  border: 1px solid #e3ead9;
+  border-radius: 5px;
+  padding: 10px 12px;
+  margin-top: 7px;
+  background: #fafcf6;
+}
+.ag-quote-search > div > p {
+  font-size: 11px;
+  line-height: 1.7;
+  color: #93a57d;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.ag-quote-search > div > button {
+  font-size: 10px;
+  margin-top: 8px;
+}
+.ag-audit-editor .ag-confirm-checkbox {
+  color: #95a580;
+  font-size: 10px;
+}
+.ag-audit-editor .ag-confirm-checkbox > input {
+  width: 13px;
+  height: 13px;
+  accent-color: var(--ag-accent);
+  flex-shrink: 0;
+  margin-top: 4px;
+}
+.ag-audit-editor-bottom {
+  display: flex;
+  gap: 7px;
+  align-items: center;
+  margin-top: 14px;
+}
+.ag-audit-editor-bottom > small {
+  flex: 1;
+  font-size: 9px;
+  color: #b0bba0;
+}
+.ag-quote-location-note {
+  display: flex;
+  gap: 7px;
+  align-items: flex-start;
+  padding: 12px 14px;
+  background: #f4f8eb;
+  border: 1px solid #dfe8d1;
+  border-radius: 6px;
+  margin: 15px 0;
+  font-size: 11px;
+  color: #839b65;
+}
+.ag-quote-location-note > svg {
+  margin-top: 2px;
+}
+.ag-quote-location-note > span {
+  flex: 1;
+}
+.ag-quote-location-note > button {
+  display: flex;
+  gap: 3px;
+  align-items: center;
+  font-size: 10px;
+  white-space: nowrap;
+}
+.ag-quote-location-note.invalid {
+  background: #f9f4e9;
+  border-color: #eae0ca;
+  color: #ad9569;
+}
+.ag-evidence-quote {
+  background: #f0e6a5;
+  color: #5f6d42;
+  box-shadow: 0 0 0 3px #f0e6a5;
+  border-radius: 2px;
+  scroll-margin-top: 40px;
+}
+@media (max-width: 650px) {
+  .ag-claims > .ag-claim-review {
+    padding: 0 12px;
+  }
+  .ag-audit-editor {
+    padding: 12px;
+  }
+  .ag-audit-editor-fields {
+    grid-template-columns: 1fr;
+  }
+  .ag-audit-editor-bottom {
+    flex-wrap: wrap;
+  }
+  .ag-audit-editor-bottom > small {
+    flex-basis: 100%;
+  }
+  .ag-audit-current > div:first-child > span {
+    margin-left: 0;
+    flex-basis: 100%;
+  }
+  .ag-audit-tools > .ag-audit-history {
+    flex-basis: 100%;
+  }
+  .ag-quote-editor {
+    padding: 11px;
+  }
+  .ag-quote-match {
+    flex-wrap: wrap;
+  }
+  .ag-quote-match > button {
+    margin-left: 18px;
+  }
+  .ag-quote-location-note {
+    flex-wrap: wrap;
+  }
+  .ag-quote-location-note > button {
+    margin-left: 19px;
+  }
+}
