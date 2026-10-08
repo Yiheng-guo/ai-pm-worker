@@ -1,3 +1,4 @@
+import { createPersonalAgent } from "./personal-agent.mjs";
 import express from "express";
 import { z } from "zod";
 import { randomUUID, createHash } from "node:crypto";
@@ -102,8 +103,9 @@ export async function createAgentRouter({ store, settings, root, cloud, runner =
     } catch {}
     return { ...runtime, provider: config.provider, model: config.model || (config.provider === "codex" ? "Codex 账号默认模型" : ""), foundryAvailable };
   }
+  const displayPrompt = run => run.userPrompt || (run.idempotencyKey?.startsWith("personal-") ? run.prompt.split("\n\n个人委托上下文（")[0] : run.prompt);
   function compactRun({ raw, sources = [], prototype, ...run }) {
-    return { ...run, ...(raw?.foundryRecovery ? { cancellationRecovery: { ...raw.foundryRecovery, projectId: raw.foundryReceipt?.projectId || null, versionId: raw.foundryReceipt?.versionId || null } } : {}), sources: sources.map(({ raw, text, ...source }) => source), ...(prototype ? { prototype: { ...prototype, code: undefined, prd: undefined } } : {}), detailAvailable: true };
+    return { ...run, prompt: displayPrompt(run), ...(raw?.foundryRecovery ? { cancellationRecovery: { ...raw.foundryRecovery, projectId: raw.foundryReceipt?.projectId || null, versionId: raw.foundryReceipt?.versionId || null } } : {}), sources: sources.map(({ raw, text, ...source }) => source), ...(prototype ? { prototype: { ...prototype, code: undefined, prd: undefined } } : {}), detailAvailable: true };
   }
   function compactEvaluation({ cases, raw, ...report }) { return { ...report, caseCount: cases?.length || 0, detailAvailable: true }; }
   router.get("/bootstrap", async (req, res) => {
@@ -114,7 +116,7 @@ export async function createAgentRouter({ store, settings, root, cloud, runner =
     ]);
     const projectedRuns = runs.map(run => projectRunActions({ ...run, claimAuditSummary: projectClaimAudit(run, reviews.filter(r => r.runId === run.id && r.projectId === run.projectId)).summary }));
     res.json({
-      projects: projects.map(p => { const prepared = prepareMemoryProject(p); if (!compact) return prepared; const { memoryHistory, ...summary } = prepared; return summary; }), runs: compact ? projectedRuns.map(compactRun) : projectedRuns.map(({ raw, sources, ...run }) => ({ ...run, sources: (sources || []).map(({ raw, ...s }) => s) })),
+      projects: projects.map(p => { const prepared = prepareMemoryProject(p); if (!compact) return prepared; const { memoryHistory, ...summary } = prepared; return summary; }), runs: compact ? projectedRuns.map(compactRun) : projectedRuns.map(({ raw, sources, ...run }) => ({ ...run, prompt: displayPrompt(run), sources: (sources || []).map(({ raw, ...s }) => s) })),
       evaluations: compact ? evaluations.map(compactEvaluation) : evaluations, runtime, compact,
       settings: { provider: config.provider, baseUrl: config.baseUrl, model: config.model, hasApiKey: !!(config.apiKey || process.env.OPENAI_API_KEY), cloud },
     });
@@ -266,7 +268,7 @@ export async function createAgentRouter({ store, settings, root, cloud, runner =
         await generatePrototype(run, parent, signal);
       } else {
         if (run.kind === "research") {
-          const urls = run.sourceIds.length && !run.sourceUrls.length ? [] : await sourceDiscoverer(run.prompt, run.sourceUrls, root, signal, message => { if (!signal.aborted) void event(run, message).catch(() => {}); });
+          const urls = run.sourceIds.length && !run.sourceUrls.length ? [] : await sourceDiscoverer(run.userPrompt || run.prompt, run.sourceUrls, root, signal, message => { if (!signal.aborted) void event(run, message).catch(() => {}); });
           if (!urls.length && !run.sources.length) throw new Error("未找到可读取的来源。请补充竞品官网、GitHub 或官方文档链接。");
           const seenUrls = new Set(run.sources.map(source => normalizeUrl(source.url)));
           for (const url of urls) {
@@ -372,7 +374,7 @@ export async function createAgentRouter({ store, settings, root, cloud, runner =
     if (seen.size > 4) throw new Error("每次研究最多读取或复用 4 个不同来源。");
     return sources;
   }
-  async function start(body, req) {
+  async function start(body, req, userPrompt) {
     if (cloud) throw Object.assign(new Error("此版本需要本机 nanobot 常驻进程。云端旧文档工作台可继续使用。"), { status: 409 });
     const input = runSchema.parse(body);
     let p = await project(input.projectId);
@@ -412,7 +414,7 @@ export async function createAgentRouter({ store, settings, root, cloud, runner =
       const history = (await store.list("agent-run")).filter(r => r.projectId === p.id && r.status === "completed" && r.kind !== "prototype" && memoryKey(r.raw?.project) === memoryKey(p) && (!p.memoryUpdatedAt || r.createdAt >= p.memoryUpdatedAt)).sort((a, b) => a.createdAt.localeCompare(b.createdAt)).slice(-3)
         .map(r => ({ runId: r.id, prompt: r.prompt, result: { ...r.result, memoryUpdates: [] }, sessionId: r.sessionId, createdAt: r.createdAt, historical: true, memoryRevision: r.raw?.project?.memoryRevision ?? 0 }));
       const run = {
-        ...input, id: runId, sessionId: input.sessionId || randomUUID().replaceAll("-", ""), status: "queued",
+        ...input, ...(userPrompt ? { userPrompt } : {}), id: runId, sessionId: input.sessionId || randomUUID().replaceAll("-", ""), status: "queued",
         stage: "排队中", events: [], sources, result: null, usage: emptyUsage(), error: null,
         createdAt: now(), parentRunId: input.parentRunId || null, idempotencyKey: key || null, requestHash,
         raw: { project: structuredClone(p), history, request: input, ...(prototypeBrief ? { prototypeBrief } : {}) },
@@ -425,7 +427,7 @@ export async function createAgentRouter({ store, settings, root, cloud, runner =
     finally { if (key) pendingKeys.delete(key); }
   }
   router.post("/runs", async (req, res) => res.status(202).json(await start(req.body, req)));
-  router.get("/runs/:id", async (req, res) => { const run = await findRun(req.params.id); res.json(projectRunActions({ ...run, ...(run.raw?.foundryRecovery ? { cancellationRecovery: { ...run.raw.foundryRecovery, projectId: run.raw.foundryReceipt?.projectId || null, versionId: run.raw.foundryReceipt?.versionId || null } } : {}), claimAudit: await claimAudit.forRun(run) })); });
+  router.get("/runs/:id", async (req, res) => { const run = await findRun(req.params.id); res.json(projectRunActions({ ...run, prompt: displayPrompt(run), ...(run.raw?.foundryRecovery ? { cancellationRecovery: { ...run.raw.foundryRecovery, projectId: run.raw.foundryReceipt?.projectId || null, versionId: run.raw.foundryReceipt?.versionId || null } } : {}), claimAudit: await claimAudit.forRun(run) })); });
   router.get("/runs/:id/claims", async (req, res) => res.json(await claimAudit.forRun(await findRun(req.params.id))));
   router.post("/runs/:id/claims/:key/review", async (req, res) => res.json(await claimAudit.review(req.params.id, req.params.key, req.body)));
   router.get("/runs/:id/requirements", async (req, res) => { const run = await findRun(req.params.id); res.json(projectRequirementBasis(run, await claimAudit.forRun(run))); });
@@ -545,8 +547,10 @@ export async function createAgentRouter({ store, settings, root, cloud, runner =
     try { await include(directory); } catch (error) { if (error.code !== "ENOENT") throw error; }
     res.attachment("yiban-evaluation-" + id + ".zip").type("application/zip").send(await zip.generateAsync({ type: "nodebuffer" }));
   });
+  const personal = createPersonalAgent({ store, project, start, cloud });
+  router.use("/personal", personal.router);
   router.use((error, req, res, next) => {
     res.status(error.status || 400).json({ error: error instanceof z.ZodError ? "输入格式不正确，请检查项目和任务内容。" : error.message || "请求失败。", ...(error.code ? { code: error.code } : {}), ...(error.actualChars !== undefined ? { actualChars: error.actualChars, maxChars: error.maxChars, selectedIndices: error.selectedIndices, unit: error.unit } : {}) });
   });
-  return { router, shutdown() { for (const controller of controllers.values()) controller.abort(); } };
+  return { router, shutdown() { personal.shutdown(); for (const controller of controllers.values()) controller.abort(); } };
 }

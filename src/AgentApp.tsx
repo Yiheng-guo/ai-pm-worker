@@ -1,3 +1,4 @@
+import PersonalHome from "./PersonalHome";
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import ReactMarkdown from "react-markdown";
@@ -63,6 +64,7 @@ const PrototypeBriefDetails = lazy(() =>
 );
 
 type Page =
+  | "personal"
   | "overview"
   | "research"
   | "evidence"
@@ -223,6 +225,7 @@ type Evaluation = {
   detailAvailable?: boolean;
 };
 type Settings = {
+  cloud?: boolean;
   provider: string;
   baseUrl: string;
   model: string;
@@ -257,6 +260,7 @@ const pages: {
   icon: typeof LayoutDashboard;
   section: string;
 }[] = [
+  { id: "personal", label: "我的亦伴", icon: Sparkles, section: "工作空间" },
   {
     id: "overview",
     label: "项目总览",
@@ -441,7 +445,7 @@ export default function AgentApp() {
     [error, setError] = useState(""),
     [locked, setLocked] = useState(false);
   const [projectId, setProjectId] = useState(""),
-    [page, setPage] = useState<Page>("overview"),
+    [page, setPage] = useState<Page>("personal"),
     [runId, setRunId] = useState(""),
     [sourceKey, setSourceKey] = useState("");
   const [requirementIndex, setRequirementIndex] = useState<number | null>(null);
@@ -594,7 +598,7 @@ export default function AgentApp() {
     const nextPage = hash.get("page") as Page;
     const validPage = [...pages.map((v) => v.id), "settings"].includes(nextPage)
       ? nextPage
-      : "overview";
+      : "personal";
     const projectRuns = data.runs.filter((r) => r.projectId === selected);
     const nextRun =
       projectRuns.find((r) => r.id === hash.get("run"))?.id ||
@@ -1569,7 +1573,7 @@ export default function AgentApp() {
             <b>亦伴</b>
             <small>PERSONAL PRODUCT AGENT</small>
           </span>
-          <span className="ag-brand-version">05</span>
+          <span className="ag-brand-version">06</span>
         </a>
         <div className="ag-project-select">
           <button
@@ -1753,6 +1757,18 @@ export default function AgentApp() {
             </div>
           ) : (
             <>
+              {page === "personal" && project && (
+                <PersonalHome
+                  key={project.id}
+                  project={project}
+                  api={api}
+                  openRun={(id) => navigate("research", id)}
+                  openProject={() => navigate("overview")}
+                  refresh={() => refresh()}
+                  runtime={boot.runtime}
+                  cloud={boot.settings.cloud}
+                />
+              )}
               {page === "overview" && project && (
                 <>
                   <div className="ag-overview-heading">

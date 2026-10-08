@@ -1,6 +1,6 @@
 {
   "name": "ai-pm-worker",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "private": true,
   "type": "module",
   "description": "亦伴 — 基于 nanobot 的个人产品研究助理，连接证据、需求与造物原型",
@@ -15,7 +15,8 @@
     "format": "prettier --write src server tests api",
     "agent:setup": "bash runtime/setup.sh",
     "agent:start": "node scripts/start-agent.mjs",
-    "agent:evaluate": "node scripts/evaluate-agent.mjs"
+    "agent:evaluate": "node scripts/evaluate-agent.mjs",
+    "demo:build": "node scripts/build-personal-demo.mjs"
   },
   "dependencies": {
     "@napi-rs/canvas": "^1.0.9",
