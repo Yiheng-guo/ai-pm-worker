@@ -225,3 +225,200 @@ test("完成时间固定，空闲轮询不把已结束委托写成新的完成�
   assert.equal(after.tasks[0].finishedAt, run.completedAt);
   assert.deepEqual(after, before);
 });
+const plan = (action, extra = {}) => ({
+  action,
+  prompt: "回顾项目进展并总结下一步",
+  targetId: null,
+  intervalMinutes: null,
+  maxExecutions: null,
+  reply: "我理解了这项委托。",
+  ...extra,
+});
+async function planned(t, plans) {
+  const inputs = [];
+  const f = await fixture(t, {
+    planner: async (input) => {
+      inputs.push(JSON.parse(input.prompt));
+      return {
+        plan: plans.shift(),
+        usage: { inputTokens: 7, outputTokens: 3, cost: null },
+        raw: { recordPath: "private-record", input: "private-prompt" },
+      };
+    },
+  });
+  const chat = async (text) => {
+    const task = (await f.request("/chat", "POST", { text })).data;
+    await f.tick();
+    for (let i = 0; i < 30; i++) {
+      const latest = (await f.request()).data.tasks.find(
+        (x) => x.id === task.id,
+      );
+      if (latest.status !== "planning") return latest;
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    throw new Error("Planner did not finish");
+  };
+  return { ...f, chat, inputs };
+}
+test("自然语言自动路由回顾，任务理解和执行分别计量，私人提示不泄露", async (t) => {
+  const f = await planned(t, [plan("recall")]);
+  const task = await f.chat("结合我的项目，安排本周工作");
+  assert.equal(task.kind, "recall");
+  assert.equal(task.status, "queued");
+  assert.equal(task.planningUsage.cost, null);
+  assert.equal(task.planningRaw, undefined);
+  await f.tick();
+  assert.equal(f.calls.length, 1);
+  assert.equal(f.calls[0].kind, "recall");
+});
+test("对话保存目标、跟进需范围授权，确认不新增理解调用，暂停立即生效", async (t) => {
+  const f = await planned(t, [
+    plan("goal", { prompt: "沉淀可检查的产品作品" }),
+    plan("routine", { intervalMinutes: 1440, maxExecutions: 3 }),
+    plan("pause", { targetId: "all" }),
+  ]);
+  await f.chat("帮我把沉淀可检查的产品作品记为长期目标");
+  assert.equal((await f.request()).data.goals.length, 1);
+  const proposed = await f.chat("每天回顾项目进展，最多三次");
+  assert.match(proposed.answer, /确认跟进/);
+  assert.equal((await f.request()).data.routines.length, 0);
+  const confirmed = await f.chat("确认跟进");
+  assert.match(confirmed.answer, /已启用/);
+  assert.equal(f.inputs.length, 2);
+  const routine = (await f.request()).data.routines[0];
+  assert.equal(routine.maxExecutions, 3);
+  assert.equal(routine.kind, "chat");
+  await f.chat("把所有跟进都暂停");
+  assert.equal((await f.request()).data.routines[0].enabled, false);
+  f.advance(86400000);
+  await f.tick();
+  assert.equal(f.calls.length, 0);
+});
+test("不完整跟进追问，补充次数沿用上文，过期授权和无关消息不启用", async (t) => {
+  const f = await planned(t, [
+    plan("routine", { intervalMinutes: 1440 }),
+    plan("routine", { intervalMinutes: 1440, maxExecutions: 2 }),
+  ]);
+  assert.match((await f.chat("每天跟进项目进展")).answer, /次数/);
+  assert.match((await f.chat("最多两次")).answer, /确认跟进/);
+  f.advance(600001);
+  assert.match((await f.chat("确认跟进")).answer, /过期/);
+  assert.equal((await f.request()).data.routines.length, 0);
+});
+test("模型伪造目标授权、跨项目原型ID、非法参数都不能触发写入或执行", async (t) => {
+  const f = await planned(t, [
+    plan("goal"),
+    plan("prototype", { targetId: "other-project" }),
+    plan("routine", { intervalMinutes: 1, maxExecutions: 999 }),
+    plan("unsupported", { reply: "邮件服务尚未接入。" }),
+  ]);
+  await f.chat("帮我总结这个产品");
+  assert.equal((await f.request()).data.goals.length, 0);
+  assert.equal((await f.chat("做一个原型")).status, "failed");
+  assert.equal((await f.chat("每天跟进一次，最多999次")).status, "failed");
+  assert.match((await f.chat("替我发邮件")).answer, /尚未接入/);
+  assert.equal(f.calls.length, 0);
+  assert.equal((await f.request()).data.routines.length, 0);
+});
+test("理解期间可读取、可取消；迟到的模型结果不能再保存目标", async (t) => {
+  let finish;
+  const f = await fixture(t, {
+    planner: () => new Promise((r) => (finish = r)),
+  });
+  const task = (
+    await f.request("/chat", "POST", { text: "请把测试取消记为我的目标" })
+  ).data;
+  await f.tick();
+  assert.equal((await f.request()).data.tasks[0].status, "planning");
+  await f.request(`/tasks/${task.id}`, "PATCH", { cancel: true });
+  finish({
+    plan: plan("goal", { prompt: "测试取消" }),
+    usage: { inputTokens: 9, cost: null },
+  });
+  await new Promise((r) => setTimeout(r, 15));
+  const saved = (await f.request()).data;
+  assert.equal(saved.tasks[0].status, "cancelled");
+  assert.equal(saved.goals.length, 0);
+  assert.equal(saved.tasks[0].planningUsage.inputTokens, 9);
+});
+test("原型请求关联已有本项目需求，进入真实造物路径且不会重新研究", async (t) => {
+  const f = await planned(t, [
+    plan("prototype", {
+      targetId: "parent",
+      prompt: "基于这一份需求生成交互原型",
+    }),
+  ]);
+  await f.store.put("agent-run", {
+    id: "parent",
+    projectId: "p",
+    kind: "research",
+    status: "completed",
+    prompt: "研究产品",
+    result: { requirements: [{ title: "需求" }] },
+  });
+  const task = await f.chat("根据已有需求生成一个原型");
+  assert.equal(task.kind, "prototype");
+  await f.tick();
+  assert.equal(f.calls[0].kind, "prototype");
+  assert.equal(f.calls[0].parentRunId, "parent");
+  assert.equal(f.calls[0].prototypeMode, "new");
+});
+
+test("明确目标和全量暂停直接执行，不消费理解模型", async (t) => {
+  let count = 0;
+  const f = await fixture(t, {
+    planner: async () => {
+      count++;
+      throw new Error("不应调用");
+    },
+  });
+  const goal = await f.request("/chat", "POST", {
+    text: "记住我的目标：沉淀产品作品",
+  });
+  assert.equal(goal.data.status, "completed");
+  assert.equal((await f.request()).data.goals[0].text, "沉淀产品作品");
+  const r = (
+    await f.request("/routines", "POST", {
+      title: "回顾",
+      prompt: "回顾项目进展",
+      intervalMinutes: 60,
+      maxExecutions: 2,
+    })
+  ).data;
+  const paused = await f.request("/chat", "POST", { text: "暂停全部跟进" });
+  assert.equal(paused.data.status, "completed");
+  assert.equal(
+    (await f.request()).data.routines.find((x) => x.id === r.id).enabled,
+    false,
+  );
+  await f.tick();
+  assert.equal(count, 0);
+  assert.equal(f.calls.length, 0);
+});
+
+test("待执行队列满仍可暂停跟进，无关目标消息撤销待确认授权", async (t) => {
+  const f = await planned(t, [
+    plan("routine", { intervalMinutes: 1440, maxExecutions: 2 }),
+  ]);
+  await f.chat("每天回顾项目进展，最多两次");
+  assert.ok((await f.request()).data.pendingApproval);
+  await f.request("/chat", "POST", { text: "记住我的目标：验证完整作品" });
+  assert.equal((await f.request()).data.pendingApproval, undefined);
+  await f.request("/routines", "POST", {
+    title: "跟进",
+    prompt: "回顾项目背景",
+    intervalMinutes: 60,
+    maxExecutions: 2,
+  });
+  for (let i = 0; i < 10; i++)
+    await f.request("/messages", "POST", { text: "排队研究编号" + i });
+  assert.equal(
+    (await f.request("/messages", "POST", { text: "队列已满的委托" })).status,
+    409,
+  );
+  assert.equal(
+    (await f.request("/chat", "POST", { text: "暂停全部跟进" })).status,
+    200,
+  );
+  assert.equal((await f.request()).data.routines[0].enabled, false);
+});

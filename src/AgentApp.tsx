@@ -1555,7 +1555,9 @@ export default function AgentApp() {
   }
 
   return (
-    <div className="ag-app">
+    <div
+      className={`ag-app ${page === "personal" ? "ag-conversation-first" : ""}`}
+    >
       {mobileNav && (
         <div className="ag-nav-backdrop" onClick={() => setMobileNav(false)} />
       )}
@@ -1573,7 +1575,7 @@ export default function AgentApp() {
             <b>亦伴</b>
             <small>PERSONAL PRODUCT AGENT</small>
           </span>
-          <span className="ag-brand-version">06</span>
+          <span className="ag-brand-version">07</span>
         </a>
         <div className="ag-project-select">
           <button
@@ -1609,6 +1611,14 @@ export default function AgentApp() {
             </div>
           )}
         </div>
+        {page === "personal" && (
+          <button
+            className="ag-new-research"
+            onClick={() => navigate("personal")}
+          >
+            我的亦伴 · 对话
+          </button>
+        )}
         <button
           className="ag-new-research"
           onClick={() => {
@@ -1620,57 +1630,60 @@ export default function AgentApp() {
           <Plus size={16} />
           开始新的研究<span>↗</span>
         </button>
-        <nav className="ag-nav">
-          {["工作空间", "交付与验证"].map((section) => (
-            <div key={section}>
-              <div className="ag-nav-section">{section}</div>
-              {pages
-                .filter((v) => v.section === section)
-                .map(({ id, label, icon: Icon }) => (
-                  <button
-                    className={page === id ? "active" : ""}
-                    onClick={() => navigate(id)}
-                    key={id}
-                  >
-                    <Icon size={18} />
-                    <span>{label}</span>
-                    {id === "tasks" &&
-                      !!actions.filter((a) => !a.done).length && (
-                        <span className="ag-nav-count">
-                          {actions.filter((a) => !a.done).length}
-                        </span>
+        <details className="ag-workspace-tools" open={page !== "personal"}>
+          <summary>工作台与交付记录</summary>
+          <nav className="ag-nav">
+            {["工作空间", "交付与验证"].map((section) => (
+              <div key={section}>
+                <div className="ag-nav-section">{section}</div>
+                {pages
+                  .filter((v) => v.section === section)
+                  .map(({ id, label, icon: Icon }) => (
+                    <button
+                      className={page === id ? "active" : ""}
+                      onClick={() => navigate(id)}
+                      key={id}
+                    >
+                      <Icon size={18} />
+                      <span>{label}</span>
+                      {id === "tasks" &&
+                        !!actions.filter((a) => !a.done).length && (
+                          <span className="ag-nav-count">
+                            {actions.filter((a) => !a.done).length}
+                          </span>
+                        )}
+                      {id === "evidence" && !!sources.length && (
+                        <span className="ag-nav-count">{sources.length}</span>
                       )}
-                    {id === "evidence" && !!sources.length && (
-                      <span className="ag-nav-count">{sources.length}</span>
-                    )}
-                  </button>
-                ))}
-            </div>
-          ))}
-        </nav>
-        <div className="ag-recent">
-          <div className="ag-nav-section">
-            最近研究 <History size={12} />
-          </div>
-          {runs
-            .filter((r) => r.kind !== "prototype")
-            .slice(0, 3)
-            .map((r) => (
-              <button
-                key={r.id}
-                className={
-                  selectedRun?.id === r.id && page === "research"
-                    ? "active"
-                    : ""
-                }
-                onClick={() => navigate("research", r.id)}
-              >
-                <span className={`ag-recent-dot ${r.status}`} />
-                <span>{r.prompt}</span>
-              </button>
+                    </button>
+                  ))}
+              </div>
             ))}
-          {!runs.length && <p>你的研究记录会保存在这里</p>}
-        </div>
+          </nav>
+          <div className="ag-recent">
+            <div className="ag-nav-section">
+              最近研究 <History size={12} />
+            </div>
+            {runs
+              .filter((r) => r.kind !== "prototype")
+              .slice(0, 3)
+              .map((r) => (
+                <button
+                  key={r.id}
+                  className={
+                    selectedRun?.id === r.id && page === "research"
+                      ? "active"
+                      : ""
+                  }
+                  onClick={() => navigate("research", r.id)}
+                >
+                  <span className={`ag-recent-dot ${r.status}`} />
+                  <span>{r.prompt}</span>
+                </button>
+              ))}
+            {!runs.length && <p>你的研究记录会保存在这里</p>}
+          </div>
+        </details>
         <div className="ag-sidebar-footer">
           <button
             className={`ag-settings-link ${page === "settings" ? "active" : ""}`}

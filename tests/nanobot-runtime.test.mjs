@@ -40,6 +40,12 @@ def check_wire_schema(node):
   for child in node: check_wire_schema(child)
 check_wire_schema(schema)
 outpath=Path(args[args.index('-o')+1])
+if 'action' in schema.get('properties',{}):
+ out={'action':'recall','prompt':'回顾当前项目背景','targetId':None,'intervalMinutes':None,'maxExecutions':None,'reply':'我会回顾当前项目。'}
+ jsonschema.validate(out,schema)
+ outpath.write_text(json.dumps(out,ensure_ascii=False))
+ print(json.dumps({'type':'turn.completed','usage':{'input_tokens':31,'output_tokens':13}}))
+ sys.exit(0)
 outpath.with_suffix('.group.json').write_text(json.dumps({'sameGroup':os.getpgrp()==os.getpgid(os.getppid())}))
 if 'CANCEL_TEST' in text: time.sleep(60)
 if 'SLOW_BLOCKING_PROVIDER_TEST' in text: time.sleep(0.2)
@@ -185,6 +191,11 @@ print(json.dumps({'type':'turn.completed',**({} if 'UNREPORTED_USAGE_TEST' in te
         return true;
       });
     } finally { delete process.env.CODEX_FIXTURE_EARLY_EXIT; }
+    const planned = await runNanobot({ ...input, kind: "plan", sessionId: "planning-schema", prompt: "回顾当前项目" });
+    assert.equal(planned.plan.action, "recall");
+    assert.equal(planned.usage.inputTokens, 31);
+    assert.equal(planned.raw.calls.length, 1);
+    assert.match(planned.raw.session.key, /^plan:/);
     const missing = await runNanobot({ ...input, sessionId: "unreported", prompt: "UNREPORTED_USAGE_TEST" });
     assert.equal(missing.usage.inputTokens, null, "Observer token estimates must not become reported usage");
     assert.equal(missing.usage.outputTokens, null);

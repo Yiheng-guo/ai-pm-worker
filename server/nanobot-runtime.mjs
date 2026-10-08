@@ -102,7 +102,7 @@ export async function getRuntimeStatus() {
 export async function runNanobot({ project, prompt, sources = [], history = [], sessionId, kind = "research", settings = {}, signal, onEvent }) {
   if (!project?.id || !project?.name || typeof prompt !== "string" || !prompt.trim())
     throw new Error("项目 ID、项目名称和任务目标不能为空。");
-  if (!["research", "recall"].includes(kind)) throw new Error("不支持的研究任务类型。");
+  if (!["research", "recall", "plan"].includes(kind)) throw new Error("不支持的研究任务类型。");
   if (settings.provider === "demo") throw new Error("研究 Agent 需要真实模型；演示模板不能冒充 nanobot 结果。");
   const input = { project, prompt, sources, history, sessionId: sessionId || "default", kind,
     settings: { provider: settings.provider || "codex", model: settings.model || "", baseUrl: settings.baseUrl || "", ...(settings.apiKey ? { apiKey: settings.apiKey } : {}) } };

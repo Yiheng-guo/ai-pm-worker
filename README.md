@@ -2,13 +2,13 @@
 
 懂项目背景的 AI 产品研究助理。用 nanobot 执行研究，连接造物验证原型，在一个工作台里查看项目背景、对话、证据、需求、原型、待办和真实评测。
 
-[在线六步演示](https://yiheng-guo.github.io/ai-pm-worker/) · [体验交互原型](https://yiheng-guo.github.io/ai-pm-worker/demo/prototype.html) · [实拍与来源记录](docs/demo/README.md) · [完整本机启动指南](docs/PUBLIC_DEMO.md)
+[对话体验](https://yiheng-guo.github.io/ai-pm-worker/personal/) · [体验交互原型](https://yiheng-guo.github.io/ai-pm-worker/demo/prototype.html) · [实拍与来源记录](docs/demo/README.md) · [完整本机启动指南](docs/PUBLIC_DEMO.md)
 
 这是在原有亦伴和造物上的整合迭代：亦伴提供统一研究工作台，nanobot 执行受控研究，造物是独立原型服务。公开演示用于了解流程和体验示例原型，不连接你的私人工作空间，也不调用模型；完整研究能力按下方步骤在本机运行。
 
-当前版本 **0.6.0**：增加「我的亦伴」个人入口、持续委托、长期目标、结果收件箱和用户明确授权的有限次定期研究。委托与目标持久化；任务关闭页面后仍由本机服务执行，关机后停止。沿用 v0.5 的项目记忆、结构化证据、需求依据冻结、造物原型与真实用量记录。见 [本轮机制、边界和验证记录](docs/ITERATION_V06.md)。历史评测不冒充新版总体成绩。
+当前版本 **0.7.0**：以持续对话为主入口。直接说任务，nanobot 理解意图后自动选择研究、回顾、目标保存、有限次跟进或造物原型；关键参数缺失时追问，定期调用先在对话中展示授权范围。目标、跟进和执行记录默认收起，进展与结果回到同一段对话。任务理解与执行的模型用量分别记录。完整能力仍需本机服务；邮件、日历、电脑操作尚未接入。见 [实现与验证](docs/ITERATION_V07.md)。
 
-[观看3分钟中文操作视频](https://yiheng-guo.github.io/ai-pm-worker/tutorial/) · **[体验新版公开交互演示](https://yiheng-guo.github.io/ai-pm-worker/personal/)** · [原版六步真实案例](https://yiheng-guo.github.io/ai-pm-worker/demo/)
+[观看上一版3分钟操作视频](https://yiheng-guo.github.io/ai-pm-worker/tutorial/) · **[体验新版公开交互演示](https://yiheng-guo.github.io/ai-pm-worker/personal/)** · [原版六步真实案例](https://yiheng-guo.github.io/ai-pm-worker/demo/)
 
 公开演示不调用模型、不连接你的私人项目、不执行后台跟进；真实功能在本机运行。
 

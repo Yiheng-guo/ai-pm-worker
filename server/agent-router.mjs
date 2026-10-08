@@ -547,7 +547,12 @@ export async function createAgentRouter({ store, settings, root, cloud, runner =
     try { await include(directory); } catch (error) { if (error.code !== "ENOENT") throw error; }
     res.attachment("yiban-evaluation-" + id + ".zip").type("application/zip").send(await zip.generateAsync({ type: "nodebuffer" }));
   });
-  const personal = createPersonalAgent({ store, project, start, cloud });
+  const personal = createPersonalAgent({ store, project, start, cloud,
+    planner: async ({ projectId, prompt, signal }) => {
+      const p = runtimeProject(await project(projectId));
+      return runner({ project: { ...p, background: p.background?.slice(0, 1200), memory: [], goal: p.goal?.slice(0, 500), constraints: p.constraints?.slice(0, 500) }, prompt, kind: "plan", sessionId: "planner-" + randomUUID(), settings: await settings(), signal });
+    },
+  });
   router.use("/personal", personal.router);
   router.use((error, req, res, next) => {
     res.status(error.status || 400).json({ error: error instanceof z.ZodError ? "输入格式不正确，请检查项目和任务内容。" : error.message || "请求失败。", ...(error.code ? { code: error.code } : {}), ...(error.actualChars !== undefined ? { actualChars: error.actualChars, maxChars: error.maxChars, selectedIndices: error.selectedIndices, unit: error.unit } : {}) });

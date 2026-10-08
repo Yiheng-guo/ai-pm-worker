@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import { createRoot } from "react-dom/client";
 import PersonalHome from "./PersonalHome";
 import "./personal-demo.css";
-const key = "yiban-public-personal-demo-v06";
+const key = "yiban-public-personal-demo-v07";
 const example = {
   goals: [
     {
@@ -12,20 +12,8 @@ const example = {
     },
   ],
   routines: [],
-  tasks: [
-    {
-      id: "task-demo",
-      text: "结合我当前的项目，安排本周的验证工作。（示例委托）",
-      kind: "research",
-      status: "completed",
-      runId: "demo",
-      seen: false,
-      createdAt: "2026-10-08T03:00:00Z",
-      answer:
-        "**示例交付，非模型实测结果**\n\n建议先写下一个长期目标，再选择一次研究委托。交付后可以进入结果收件箱，检查依据、需求草稿和后续行动。\n\n完整版本会保存真实运行记录；这个公开页面只演示交互，不访问你的私有项目、不执行模型或后台定时任务。",
-      usage: { inputTokens: null, outputTokens: null, cost: null },
-    },
-  ],
+  tasks: [] as any[],
+  pendingApproval: null as any,
 };
 let state = structuredClone(example);
 try {
@@ -53,18 +41,85 @@ async function api(path: string, options: RequestInit = {}) {
   const suffix = path.split("/public-example")[1] || "";
   if (!options.method || options.method === "GET")
     return structuredClone(state);
-  if (suffix === "/messages") {
+  if (suffix === "/chat" || suffix === "/messages") {
+    const text = body.text.trim();
+    let answer =
+      "**交互示例 · 未调用模型**\n\n真实版本会理解任务，自动选择研究或项目回顾，把进展和带来源的交付带回对话。这个公开页面只演示流程，不生成真实结论。";
+    if (
+      /^(确认跟进|确认|可以|好)[。！!]?$/i.test(text) &&
+      state.pendingApproval
+    ) {
+      const p = state.pendingApproval;
+      (state.routines as any[]).push({
+        ...p,
+        id: crypto.randomUUID(),
+        enabled: true,
+        executions: 0,
+        nextAt: new Date(Date.now() + p.intervalMinutes * 60000).toISOString(),
+      });
+      state.pendingApproval = null;
+      answer =
+        "**交互示例 · 未启用真实调度**\n\n示例跟进已保存，可说“暂停全部跟进”。公开页面不会按时调用模型。";
+    } else if (
+      /^(取消跟进|取消|算了)[。！!]?$/i.test(text) &&
+      state.pendingApproval
+    ) {
+      state.pendingApproval = null;
+      answer = "已取消示例跟进设置。";
+    } else {
+      state.pendingApproval = null;
+      if (/暂停.*(全部|所有).*跟进/.test(text)) {
+        (state.routines as any[]).forEach((r) => (r.enabled = false));
+        answer = "已暂停当前浏览器的全部示例跟进。没有真实后台任务。";
+      } else if (/记住.*目标[：:]/.test(text)) {
+        const goal = text.split(/[：:]/).slice(1).join("：").trim();
+        if (goal)
+          state.goals.push({
+            id: crypto.randomUUID(),
+            text: goal,
+            done: false,
+          });
+        answer = "已把这条目标保存在当前浏览器的演示空间：" + goal;
+      } else if (/每天|每周/.test(text) && /次/.test(text)) {
+        const n = text.match(
+          /(?:最多|共|总共|一共)\s*([1-9]|10|一|二|两|三|四|五|六|七|八|九|十)\s*次/,
+        );
+        if (n) {
+          const chinese: Record<string, number> = {
+            一: 1,
+            二: 2,
+            两: 2,
+            三: 3,
+            四: 4,
+            五: 5,
+            六: 6,
+            七: 7,
+            八: 8,
+            九: 9,
+            十: 10,
+          };
+          const times = Number(n[1]) || chinese[n[1]];
+          state.pendingApproval = {
+            title: text.slice(0, 80),
+            prompt: text,
+            intervalMinutes: /每周/.test(text) ? 10080 : 1440,
+            maxExecutions: times,
+          };
+          answer = `**示例授权范围**\n\n每 ${state.pendingApproval.intervalMinutes / 60} 小时一次，最多 ${times} 次。真实版本需要本机服务持续运行，每次可能消耗模型额度。\n\n回复“确认跟进”保存示例，或“取消跟进”。`;
+        } else
+          answer = "示例跟进还需要执行上限，例如“每天回顾项目进展，最多三次”。";
+      } else if (/邮件|日历|购买|部署/.test(text))
+        answer =
+          "这项执行能力尚未接入，当前不能代你完成。可以在真实版本里委托我整理草稿或计划。";
+    }
     const task = {
       id: crypto.randomUUID(),
-      text: body.text,
-      kind: body.kind,
+      text,
+      kind: "chat",
       status: "completed",
       seen: false,
       createdAt: new Date().toISOString(),
-      runId: "demo",
-      answer:
-        "**交互演示，未调用模型**\n\n你的委托已加入当前浏览器的演示记录。真实版本会读取项目与目标，交由 nanobot 执行，并记录结果、失败和提供方用量。\n\n请继续体验：打开结果收件箱 → 查看详情 → 标记已读。这里不会针对输入内容生成真实研究结论。",
-      usage: { inputTokens: null, outputTokens: null, cost: null },
+      answer,
     };
     state.tasks.push(task);
     save();
@@ -117,7 +172,7 @@ function Demo() {
     <>
       <div className="pd-bar">
         <strong>亦伴 · Personal Agent</strong>
-        <a href="../tutorial/">操作视频</a>
+        <a href="../tutorial/">上一版操作视频</a>
         <a href="../demo/">原版六步实拍</a>
         <a href="https://github.com/Yiheng-guo/ai-pm-worker#readme">
           源码与本机启动

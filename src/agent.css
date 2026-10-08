@@ -5749,3 +5749,7 @@
     flex-basis: 100%;
   }
 }
+
+.ag-workspace-tools > summary { cursor: pointer; color: #809080; font-size: 11px; padding: 15px 22px; }
+.ag-conversation-first .ag-new-research:not(:first-of-type) { display: none; }
+.ag-conversation-first .ag-topbar-right > .ag-icon-button { display: none; }
