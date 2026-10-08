@@ -8,7 +8,7 @@
 
 当前版本 **0.6.0**：增加「我的亦伴」个人入口、持续委托、长期目标、结果收件箱和用户明确授权的有限次定期研究。委托与目标持久化；任务关闭页面后仍由本机服务执行，关机后停止。沿用 v0.5 的项目记忆、结构化证据、需求依据冻结、造物原型与真实用量记录。见 [本轮机制、边界和验证记录](docs/ITERATION_V06.md)。历史评测不冒充新版总体成绩。
 
-**[体验新版公开交互演示](https://yiheng-guo.github.io/ai-pm-worker/personal/)** · [原版六步真实案例](https://yiheng-guo.github.io/ai-pm-worker/demo/)
+[观看3分钟中文操作视频](https://yiheng-guo.github.io/ai-pm-worker/tutorial/) · **[体验新版公开交互演示](https://yiheng-guo.github.io/ai-pm-worker/personal/)** · [原版六步真实案例](https://yiheng-guo.github.io/ai-pm-worker/demo/)
 
 公开演示不调用模型、不连接你的私人项目、不执行后台跟进；真实功能在本机运行。
 

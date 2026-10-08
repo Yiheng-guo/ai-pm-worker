@@ -117,6 +117,7 @@ function Demo() {
     <>
       <div className="pd-bar">
         <strong>亦伴 · Personal Agent</strong>
+        <a href="../tutorial/">操作视频</a>
         <a href="../demo/">原版六步实拍</a>
         <a href="https://github.com/Yiheng-guo/ai-pm-worker#readme">
           源码与本机启动
